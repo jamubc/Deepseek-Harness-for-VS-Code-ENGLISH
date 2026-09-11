@@ -18,12 +18,12 @@ A zero-dependency VS Code extension that brings **DeepSeek Harness (DSH)** into 
 
 ## ⚡ Install the English build
 
-1. Download `deepseek-harness-vscode-<version>.vsix` from
+1. Download `deepseek-harness-vscode-english-<version>.vsix` from
    [Releases](https://github.com/jamubc/Deepseek-Harness-for-VS-Code-ENGLISH/releases/latest).
 2. Install it, either from the terminal:
 
    ```bash
-   code --install-extension deepseek-harness-vscode-<version>.vsix
+    code --install-extension deepseek-harness-vscode-english-<version>.vsix
    ```
 
    or in VS Code: `Ctrl+Shift+P` → **Extensions: Install from VSIX…** → pick the file.
@@ -38,7 +38,7 @@ your behalf).
 To build the `.vsix` yourself instead, no tooling is required beyond Node:
 
 ```bash
-npm run package        # writes dist/deepseek-harness-vscode-<version>.vsix
+npm run package         # writes dist/deepseek-harness-vscode-english-<version>.vsix
 npm run install:vsix   # installs it with the code CLI
 ```
 
@@ -221,15 +221,15 @@ The Copilot bridge is an **early release**, but it has been thoroughly tested an
 This extension is pure JavaScript: it needs no npm install and no build step:
 
 ```bash
-git clone https://github.com/Vithrive/Deepseek-Harness-for-VS-Code.git
-code Deepseek-Harness-for-VS-Code
+git clone https://github.com/jamubc/Deepseek-Harness-for-VS-Code-ENGLISH.git
+code Deepseek-Harness-for-VS-Code-ENGLISH
 ```
 
 Press `F5` in VS Code to open an Extension Development Host window, then open your project folder in it. To package and install it yourself:
 
 ```bash
 npx --yes @vscode/vsce package --allow-missing-repository
-code --install-extension deepseek-harness-vscode-<version>.vsix
+code --install-extension deepseek-harness-vscode-english-<version>.vsix
 ```
 
 ## Prerequisites and known limitations
