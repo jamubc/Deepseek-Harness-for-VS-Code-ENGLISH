@@ -1,5 +1,5 @@
 {
-  "name": "deepseek-harness-vscode",
+  "name": "deepseek-harness-vscode-english",
   "displayName": "DeepSeek Harness for VS Code (English)",
   "description": "%description%",
   "version": "0.8.43",
@@ -26,7 +26,7 @@
     "l10n:verify-comments": "node scripts/verify-comment-only.js extension.js HEAD",
     "package": "node scripts/build-vsix.js",
     "package:vsce": "vsce package --out dist/",
-    "install:vsix": "code --install-extension dist/deepseek-harness-vscode-$npm_package_version.vsix"
+    "install:vsix": "code --install-extension dist/$npm_package_name-$npm_package_version.vsix"
   },
   "extensionKind": [
     "workspace"
