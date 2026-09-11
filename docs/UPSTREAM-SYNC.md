@@ -122,7 +122,7 @@ later ship real translations for other languages, add
 
 | Command | Purpose |
 | --- | --- |
-| `npm run l10n:check` | fails if any user-facing Chinese is untranslated, if `package.nls.json` disagrees with its source table, or if the manifest metadata is not publishable |
+| `npm run l10n:check` | fails if any user-facing Chinese is untranslated, if `package.nls.json` disagrees with its source table, or if the manifest metadata is invalid |
 | `npm run l10n:manifest` | re-tokenizes `package.json`, regenerates `package.nls.json` |
 | `npm run l10n:status` | reports what Chinese remains, and why it is allowed to be there |
 | `npm run l10n:verify-comments` | proves a comment-only pass changed no code |

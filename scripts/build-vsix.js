@@ -108,8 +108,8 @@ function main() {
 
   const files = collectFiles(ignored);
 
-  // A Marketplace listing must not contain the %% placeholders unresolved, and the
-  // English text has to be present, so assert both before building anything.
+  // A .vsix must not ship with the %key% placeholders unresolved — VS Code would show
+  // the raw token as the setting description — so resolve every one before building.
   const nlsPath = path.join(ROOT, 'package.nls.json');
   if (!fs.existsSync(nlsPath)) {
     console.error('package.nls.json is missing — run: node scripts/l10n-sync-manifest.js --write');

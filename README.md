@@ -14,24 +14,26 @@ A zero-dependency VS Code extension that brings **DeepSeek Harness (DSH)** into 
 > the merge daily and only asks for help when upstream adds new strings.
 >
 > Maintaining this fork? **[docs/UPSTREAM-SYNC.md](docs/UPSTREAM-SYNC.md)** covers the
-> sync, **[docs/PUBLISHING.md](docs/PUBLISHING.md)** covers releasing, and
-> [TERMINOLOGY.md](TERMINOLOGY.md) records the translation decisions.
+> sync, and [TERMINOLOGY.md](TERMINOLOGY.md) records the translation decisions.
 
 ## ⚡ Install the English build
 
-Download `deepseek-harness-vscode-<version>.vsix` from
-[Releases](https://github.com/jamubc/Deepseek-Harness-for-VS-Code-ENGLISH/releases/latest),
-then either:
+1. Download `deepseek-harness-vscode-<version>.vsix` from
+   [Releases](https://github.com/jamubc/Deepseek-Harness-for-VS-Code-ENGLISH/releases/latest).
+2. Install it, either from the terminal:
 
-```bash
-code --install-extension deepseek-harness-vscode-<version>.vsix
-```
+   ```bash
+   code --install-extension deepseek-harness-vscode-<version>.vsix
+   ```
 
-or in VS Code: `Ctrl+Shift+P` → **Extensions: Install from VSIX…** → pick the file.
+   or in VS Code: `Ctrl+Shift+P` → **Extensions: Install from VSIX…** → pick the file.
+3. `Ctrl+Shift+P` → **Developer: Reload Window**.
 
-Then `Ctrl+Shift+P` → **Developer: Reload Window**. The panel, its buttons, the error
-pages, every setting and the Copilot model picker are English from that point on —
-the extension does not depend on your VS Code display language.
+The panel, its buttons, the error pages, every setting and the Copilot model picker are
+English from that point on — the extension does not depend on your VS Code display
+language. When you open the panel, the extension auto-detects and starts DSH (if it is
+not installed, the extension prompts you and runs `npm install -g @deepseek-ai/dsh` on
+your behalf).
 
 To build the `.vsix` yourself instead, no tooling is required beyond Node:
 
@@ -51,19 +53,6 @@ If you like this extension, please star [Deepseek-Harness-for-VS-Code](https://g
 - [anupamme](https://github.com/anupamme) — reported the workspace settings injection surface, which drove hardening of the child-process invocation (PR #12).
 
 ---
-
-## 🚀 Quick install
-
-- **Marketplace**: search for **DeepSeek Harness for VSCode** in the VS Code Marketplace and install it in one click ([Marketplace page](https://marketplace.visualstudio.com/items?itemName=vithrive.deepseek-harness-vscode)).
-- **.vsix**: download `deepseek-harness-vscode-<version>.vsix` from [GitHub Releases](https://github.com/Vithrive/Deepseek-Harness-for-VS-Code/releases/latest), then:
-
-  ```bash
-  code --install-extension deepseek-harness-vscode-<version>.vsix
-  ```
-
-  Or in VS Code: `Ctrl+Shift+P` → `Extensions: Install from VSIX...`.
-
-After installing, run `Ctrl+Shift+P` → `Reload Window`. When you open the panel, the extension auto-detects and starts DSH (if it is not installed, the extension prompts you and runs `npm install -g @deepseek-ai/dsh` on your behalf).
 
 ---
 

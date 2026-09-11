@@ -1,22 +1,16 @@
 name: release
 
-# Tag a commit and this builds the .vsix, attaches it to a GitHub release, and — only
-# if a Marketplace token is configured — publishes to the VS Code Marketplace.
+# Tag a commit and this builds the .vsix and attaches it to a GitHub release, so the
+# Releases page always offers the current English build.
 #
-#   git tag v0.8.43 && git push origin v0.8.43
+#   git tag v0.8.44 && git push origin v0.8.44
 #
-# Keeping the tag in step with upstream's version means the fork's releases can be read
-# side by side with upstream's, and the daily sync workflow has an obvious thing to do
-# when upstream cuts a release.
+# The tag tracks upstream's version: this fork adds no features, so matching numbers
+# make it obvious which upstream release an English build corresponds to.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
-    inputs:
-      publish:
-        description: 'Also publish to the VS Code Marketplace (needs VSCE_PAT)'
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -36,20 +30,6 @@ jobs:
 
       - name: Tests
         run: npm test
-
-      # Publishes under whatever `publisher` package.json declares, so a mistake here
-      # would try to push a build to someone else's Marketplace account. Fail early
-      # with a clear message instead.
-      - name: Check the publisher is the fork owner, not upstream
-        run: |
-          PUBLISHER=$(node -p "require('./package.json').publisher")
-          if [ "$PUBLISHER" = "vithrive" ]; then
-            echo "::error::package.json still declares upstream's publisher 'vithrive'."
-            echo "Create a publisher at https://marketplace.visualstudio.com/manage and set"
-            echo "'publisher' in package.json to its id. See docs/PUBLISHING.md."
-            exit 1
-          fi
-          echo "publisher: $PUBLISHER"
 
       - name: Build the .vsix
         run: npx --yes @vscode/vsce package --out dist/
@@ -76,11 +56,5 @@ jobs:
           code --install-extension $(basename dist/*.vsix)
           \`\`\`
 
-          Based on upstream $(node -p "require('./package.json').version"); see docs/UPSTREAM-SYNC.md." \
+          Based on upstream $(node -p "require('./package.json').version")." \
           || gh release upload "$GITHUB_REF_NAME" dist/*.vsix --clobber
-
-      - name: Publish to the VS Code Marketplace
-        if: startsWith(github.ref, 'refs/tags/v') && secrets.VSCE_PAT != ''
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx --yes @vscode/vsce publish --packagePath dist/*.vsix

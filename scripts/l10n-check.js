@@ -293,17 +293,21 @@ function main() {
     if (!tokens.length) errors.push('package.json contains no %token% strings; manifest sync has not run');
   }
 
-  // ---- 7. Manifest metadata must be publishable ---------------------------
+  // ---- 7. Manifest metadata ----------------------------------------------
   //
-  // These are the mistakes that only surface at `vsce publish` time, usually after a
-  // tag has been pushed. Checking them here keeps the failure local.
-  const PUBLISHER_RE = /^[a-z0-9][a-z0-9-]*$/;
-  if (!pkg.publisher || !PUBLISHER_RE.test(pkg.publisher)) {
-    errors.push('package.json publisher must be a Marketplace publisher id (lowercase letters, digits and hyphens): ' + JSON.stringify(pkg.publisher));
+  // VS Code rejects a manifest whose identity fields are malformed, and the identity
+  // is permanent once an extension has been installed anywhere — so a mistake here is
+  // expensive to undo. Checking it alongside the translations keeps one gate for
+  // "is this a valid English build?".
+  const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
+  if (!pkg.publisher || !ID_RE.test(pkg.publisher)) {
+    errors.push('package.json publisher must be lowercase letters, digits and hyphens: ' + JSON.stringify(pkg.publisher));
   } else if (pkg.publisher === 'vithrive' && !/Vithrive/.test(String(pkg.repository && pkg.repository.url))) {
-    errors.push('package.json declares upstream\'s publisher "vithrive" but the repository is not upstream\'s — publishing would target someone else\'s account');
+    // Upstream's publisher id belongs to the Chinese project. Carrying it here would
+    // claim their identity, so treat it as an error rather than a style nit.
+    errors.push('package.json declares upstream\'s publisher "vithrive" but the repository is not upstream\'s');
   }
-  if (!pkg.name || !PUBLISHER_RE.test(pkg.name)) {
+  if (!pkg.name || !ID_RE.test(pkg.name)) {
     errors.push('package.json name must be lowercase letters, digits and hyphens: ' + JSON.stringify(pkg.name));
   }
   if (!pkg.displayName || CJK.test(pkg.displayName)) {
@@ -321,10 +325,10 @@ function main() {
   if (!fs.existsSync(PATH.join(ROOT, pkg.icon || 'media/icon.png'))) {
     errors.push('package.json icon does not exist: ' + JSON.stringify(pkg.icon));
   }
-  // A .vsix whose README is not English would be a strange listing.
+  // The README is the face of the fork on GitHub and inside the packaged extension.
   const readmeChars = (fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8').match(CJK) || []).length;
   if (readmeChars > 0) {
-    errors.push('README.md contains ' + readmeChars + ' Chinese characters; the Marketplace listing is generated from it');
+    errors.push('README.md contains ' + readmeChars + ' Chinese characters');
   }
 
   // ---- report -------------------------------------------------------------
