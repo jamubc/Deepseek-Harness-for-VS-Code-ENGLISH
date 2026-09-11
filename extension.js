@@ -6,6 +6,10 @@ const crypto = require('crypto');
 const { spawn, exec, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+// English language pack (see l10n.js and TERMINOLOGY.md). User-facing strings stay
+// in their upstream Chinese form as translation keys so upstream merges stay clean;
+// `t()` resolves them to English on every VS Code UI language.
+const { t, applyManifestTranslations } = require('./l10n.js');
 
 const VIEW_ID = 'dsh.webview';
 const DEFAULT_URL = 'http://127.0.0.1:3080';
@@ -140,7 +144,7 @@ function runCommandOutput(cmd, args, timeoutMs = 12000) {
   return new Promise((resolve, reject) => {
     // 纵深校验（PR #12 思路）：同 runCommandOk。
     if (typeof cmd !== 'string' || cmd === '' || SHELL_META_PATTERN.test(cmd)) {
-      reject(new Error('命令包含 shell 元字符或为空，已拒绝执行'));
+      reject(new Error(t('命令包含 shell 元字符或为空，已拒绝执行')));
       return;
     }
     if (process.platform === 'win32') {
@@ -231,24 +235,24 @@ async function ensureDshInstalled() {
   }
 
   const choice = await vscode.window.showWarningMessage(
-    '检测到当前环境未安装 DeepSeek Harness (dsh)，是否现在安装？',
+    t('检测到当前环境未安装 DeepSeek Harness (dsh)，是否现在安装？'),
     { modal: true },
-    '安装'
+    t('安装')
   );
-  if (choice !== '安装') {
+  if (choice !== t('安装')) {
     return false;
   }
 
   const installed = await vscode.window.withProgress({
     location: vscode.ProgressLocation.Notification,
-    title: '正在安装 DeepSeek Harness（npm install -g @deepseek-ai/dsh）…',
+    title: t('正在安装 DeepSeek Harness（npm install -g @deepseek-ai/dsh）…'),
     cancellable: false
   }, async () => {
     try {
       await installDsh();
       return true;
     } catch (e) {
-      vscode.window.showErrorMessage(`DeepSeek Harness 安装失败：${e.message}`);
+      vscode.window.showErrorMessage(t('DeepSeek Harness 安装失败：{0}', [e.message]));
       return false;
     }
   });
@@ -373,11 +377,11 @@ function httpPostJson(url, payload, timeoutMs = 5000) {
  * @param {string} t
  * @returns {boolean}
  */
-function isJunkUserText(t) {
-  if (!t) return true;
-  if (/^You are an expert/i.test(t)) return true; // VS Code 系统提示词（含 <instructions><skills><description> 等）
-  if (t.indexOf('<instructions>') >= 0 && t.indexOf('<skills>') >= 0) return true;
-  if (/^\s*<(environment_info|workspace_info|context|reminderInstructions|user_info|instructions|userMemory|sessionMemory|repoMemory)>/.test(t)) return true;
+function isJunkUserText(text) {
+  if (!text) return true;
+  if (/^You are an expert/i.test(text)) return true; // VS Code system prompt (contains <instructions><skills><description> …)
+  if (text.indexOf('<instructions>') >= 0 && text.indexOf('<skills>') >= 0) return true;
+  if (/^\s*<(environment_info|workspace_info|context|reminderInstructions|user_info|instructions|userMemory|sessionMemory|repoMemory)>/.test(text)) return true;
   return false;
 }
 
@@ -533,7 +537,7 @@ async function ensureAuthProxy() {
     try {
       proxy = await createAuthProxy(getUrl());
     } catch (e) {
-      console.error('[DeepSeek Harness] 认证代理启动失败，回退直连：', e);
+      console.error(t('[DeepSeek Harness] 认证代理启动失败，回退直连：'), e);
       return null;
     }
     authProxy = proxy;
@@ -728,7 +732,7 @@ function createAuthProxy(targetUrl) {
             if (!res.headersSent) {
               res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
             }
-            try { res.end('DeepSeek Harness 代理：上游 dsh 连接失败'); } catch { /* noop */ }
+            try { res.end(t('DeepSeek Harness 代理：上游 dsh 连接失败')); } catch { /* noop */ }
             finish(0);
           });
           req.on('error', () => { try { upstream.destroy(); } catch { /* noop */ } });
@@ -803,7 +807,7 @@ function createAuthProxy(targetUrl) {
     server.listen(0, '127.0.0.1', () => {
       port = server.address().port;
       server.removeAllListeners('error');
-      server.on('error', (e) => console.error('[DeepSeek Harness] 认证代理错误：', e));
+      server.on('error', (e) => console.error(t('[DeepSeek Harness] 认证代理错误：'), e));
       resolve({
         target: () => targetUrl,
         port: () => port,
@@ -903,14 +907,14 @@ function maybeGuideAuth(isTab) {
   if (now - lastAuthPromptAt < 3 * 60 * 1000) return;
   lastAuthPromptAt = now;
   vscode.window.showWarningMessage(
-    '新版 dsh web 启用了浏览器认证，当前实例不是由本窗口启动，无法静默认证。',
-    '重启并自动认证（推荐）',
-    '粘贴认证链接'
+    t('新版 dsh web 启用了浏览器认证，当前实例不是由本窗口启动，无法静默认证。'),
+    t('重启并自动认证（推荐）'),
+    t('粘贴认证链接')
   ).then(async (choice) => {
-    if (choice === '重启并自动认证（推荐）') {
+    if (choice === t('重启并自动认证（推荐）')) {
       const ok = await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
-        title: '正在重启 dsh web 以完成自动认证…',
+        title: t('正在重启 dsh web 以完成自动认证…'),
         cancellable: false
       }, async () => {
         const installed = await ensureDshInstalled();
@@ -922,11 +926,11 @@ function maybeGuideAuth(isTab) {
         if (isTab && tabReloadFn) tabReloadFn();
         else if (activeView) render(activeView);
       } else {
-        vscode.window.showErrorMessage('dsh web 重启失败，请手动重启后重试。');
+        vscode.window.showErrorMessage(t('dsh web 重启失败，请手动重启后重试。'));
       }
-    } else if (choice === '粘贴认证链接') {
+    } else if (choice === t('粘贴认证链接')) {
       const input = await vscode.window.showInputBox({
-        prompt: '粘贴 dsh web 启动时打印的认证链接（形如 http://127.0.0.1:3080/?token=…，整行粘贴即可）',
+        prompt: t('粘贴 dsh web 启动时打印的认证链接（形如 http://127.0.0.1:3080/?token=…，整行粘贴即可）'),
         ignoreFocusOut: true
       });
       if (input && learnDshToken(input)) {
@@ -969,7 +973,7 @@ async function startDsh() {
   // 下无注入面（win32 需 shell 命中 dsh.cmd shim，POSIX 不经 shell）。
   // 纵深校验（PR #12 思路）：cmd 来自 getDshCommand()（已净化），此处再拒一次。
   if (typeof inv.cmd !== 'string' || inv.cmd === '' || SHELL_META_PATTERN.test(inv.cmd)) {
-    throw new Error('dsh 命令包含 shell 元字符或为空，已拒绝启动');
+    throw new Error(t('dsh 命令包含 shell 元字符或为空，已拒绝启动'));
   }
   const args = [
     ...inv.prefix,
@@ -1000,9 +1004,9 @@ async function startDsh() {
 
   child.on('error', (err) => {
     if (activeView) {
-      activeView.description = '启动失败';
+      activeView.description = t('启动失败');
     }
-    vscode.window.showErrorMessage(`DeepSeek Harness 启动失败: ${err.message}`);
+    vscode.window.showErrorMessage(t('DeepSeek Harness 启动失败: {0}', [err.message]));
   });
   child.on('exit', (code) => {
     if (managedChild === child) {
@@ -1061,8 +1065,7 @@ function attachDshOutputReader(child) {
       }
       if (line.indexOf('opening the default browser') >= 0) {
         // --no-open 未生效（老版本不支持该参数等）：提示一次便于定位。
-        console.warn('[DeepSeek Harness] dsh 自行打开了系统浏览器（--no-open 未生效）。' +
-          '新版 dsh 由扩展自动抑制弹页；若仍弹页请检查 dshPanel.openSystemBrowser 与 dsh 配置。');
+        console.warn(t('[DeepSeek Harness] dsh 自行打开了系统浏览器（--no-open 未生效）。新版 dsh 由扩展自动抑制弹页；若仍弹页请检查 dshPanel.openSystemBrowser 与 dsh 配置。'));
       }
     }
     if (buf.length > 64 * 1024) buf = '';
@@ -1293,7 +1296,7 @@ function makeNonce() {
 
 function buildLoadingHtml() {
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
@@ -1313,8 +1316,8 @@ function buildLoadingHtml() {
 </head>
 <body>
   <div style="text-align:center;">
-    <div>正在启动 DeepSeek Harness…</div>
-    <div class="sub">工作区：${escapeHtml(getWorkspaceDir())}</div>
+    <div>${t('正在启动 DeepSeek Harness…')}</div>
+    <div class="sub">${t('工作区：{0}', [escapeHtml(getWorkspaceDir())])}</div>
   </div>
 </body>
 </html>`;
@@ -1322,7 +1325,7 @@ function buildLoadingHtml() {
 
 function buildErrorHtml(reason) {
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
@@ -1345,10 +1348,10 @@ function buildErrorHtml(reason) {
 </head>
 <body>
   <div class="box">
-    <div class="title">无法连接 DeepSeek Harness</div>
+    <div class="title">${t('无法连接 DeepSeek Harness')}</div>
     <div class="sub">${escapeHtml(reason)}</div>
-    <div class="hint">请确认 dsh 已安装，或点击面板顶部的“刷新”重试。</div>
-    <div class="hint">如未安装 dsh 请参考：https://www.runoob.com/deepseek-harness/deepseek-harness-install.html</div>
+    <div class="hint">${t('请确认 dsh 已安装，或点击面板顶部的“刷新”重试。')}</div>
+    <div class="hint">If dsh is not installed yet, see: https://www.runoob.com/deepseek-harness/deepseek-harness-install.html</div>
   </div>
 </body>
 </html>`;
@@ -1360,7 +1363,7 @@ function buildErrorHtml(reason) {
  */
 function buildSuspendedHtml() {
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
@@ -1380,8 +1383,8 @@ function buildSuspendedHtml() {
 </head>
 <body>
   <div class="box">
-    <div class="title">DeepSeek Harness 已在标签页中打开</div>
-    <div class="sub">关闭标签页后，本侧边栏面板会自动恢复加载。</div>
+    <div class="title">${t('DeepSeek Harness 已在标签页中打开')}</div>
+    <div class="sub">${t('关闭标签页后，本侧边栏面板会自动恢复加载。')}</div>
   </div>
 </body>
 </html>`;
@@ -1396,10 +1399,10 @@ function buildIframeHtml(url, scale) {
   try {
     target = new URL(url);
   } catch (e) {
-    throw new Error(`无法解析显示地址：${url}`);
+    throw new Error(t('无法解析显示地址：{0}', [url]));
   }
   if (target.protocol !== 'http:' && target.protocol !== 'https:') {
-    throw new Error(`不允许的显示地址协议：${target.protocol}`);
+    throw new Error(t('不允许的显示地址协议：{0}', [target.protocol]));
   }
   const origin = target.origin; // 形如 http://127.0.0.1:3080 或 https://xxxx.example.com
   const nonce = makeNonce();
@@ -1407,7 +1410,7 @@ function buildIframeHtml(url, scale) {
   // 用 CSS zoom 缩放（重新布局、按设备分辨率渲染，任意字号下清晰），
   // 不用 transform:scale（渲染后栅格化缩放，非整数倍缩放时整页模糊）。
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy"
@@ -1558,7 +1561,7 @@ async function installedPluginVersion(profileDir, plugin) {
 async function installPluginViaNpm(profileDir, plugin) {
   // 安全面守卫：plugin 仅允许内置常量（npm pack/tar 的命令拼接不做通用转义）。
   if (plugin !== DSH_PLUGIN_NAME) {
-    throw new Error('installPluginViaNpm 仅支持内置插件 ' + DSH_PLUGIN_NAME);
+    throw new Error(t('installPluginViaNpm 仅支持内置插件 ') + DSH_PLUGIN_NAME);
   }
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-plugin-'));
   try {
@@ -1571,7 +1574,7 @@ async function installPluginViaNpm(profileDir, plugin) {
     });
     const parsed = JSON.parse(packOut);
     const tarball = parsed && parsed[0] && parsed[0].filename ? parsed[0].filename : null;
-    if (!tarball) throw new Error('npm pack 未能解析 tarball 文件名');
+    if (!tarball) throw new Error(t('npm pack 未能解析 tarball 文件名'));
     const extractDir = path.join(tmp, 'extract');
     await fs.promises.mkdir(extractDir, { recursive: true });
     await new Promise((resolve, reject) => {
@@ -1639,7 +1642,7 @@ function clipboardPluginFiles() {
   const pkgJson = JSON.stringify({
     name: CLIPBOARD_PLUGIN_NAME,
     version: CLIPBOARD_PLUGIN_VERSION,
-    description: 'DeepSeek Harness 插件：DSH 页面被 VS Code webview（跨源 iframe）内嵌时，修复 macOS 上 ⌘C/⌘V/⌘X 快捷键失效的问题（改用 execCommand 显式执行）。由 Deepseek-Harness-for-VS-Code 扩展内置分发。',
+    description: t('DeepSeek Harness 插件：DSH 页面被 VS Code webview（跨源 iframe）内嵌时，修复 macOS 上 ⌘C/⌘V/⌘X 快捷键失效的问题（改用 execCommand 显式执行）。由 Deepseek-Harness-for-VS-Code 扩展内置分发。'),
     keywords: ['deepseek', 'harness', 'dsh', 'cordis', 'plugin', 'clipboard', 'webview', 'vscode'],
     type: 'module',
     main: 'lib/index.js',
@@ -1796,8 +1799,8 @@ async function ensureClipboardPlugin(profileDir) {
     await ensureProfileDeclaration(profileDir, CLIPBOARD_PLUGIN_NAME, null);
     return true;
   } catch (e) {
-    console.error(`[DeepSeek Harness] 安装内置插件 ${CLIPBOARD_PLUGIN_NAME} 失败：`, e);
-    vscode.window.showWarningMessage(`安装 DSH 剪贴板兼容插件 ${CLIPBOARD_PLUGIN_NAME} 失败：${e.message}`);
+    console.error(t('[DeepSeek Harness] 安装内置插件 {0} 失败：', [CLIPBOARD_PLUGIN_NAME]), e);
+    vscode.window.showWarningMessage(t('安装 DSH 剪贴板兼容插件 {0} 失败：{1}', [CLIPBOARD_PLUGIN_NAME, e.message]));
     return false;
   }
 }
@@ -1833,8 +1836,8 @@ async function ensureDshPlugins() {
     }
     return changed;
   } catch (e) {
-    console.error(`[DeepSeek Harness] 自动安装 ${DSH_PLUGIN_NAME} 失败：`, e);
-    vscode.window.showWarningMessage(`自动安装 DSH 插件 ${DSH_PLUGIN_NAME} 失败：${e.message}`);
+    console.error(t('[DeepSeek Harness] 自动安装 {0} 失败：', [DSH_PLUGIN_NAME]), e);
+    vscode.window.showWarningMessage(t('自动安装 DSH 插件 {0} 失败：{1}', [DSH_PLUGIN_NAME, e.message]));
     return false;
   }
 }
@@ -1852,11 +1855,11 @@ function handleWebviewMessage(msg) {
     }
   } else if (msg && msg.type === 'insert-selection-ack') {
     if (msg.status === 'forwarded') {
-      vscode.window.showInformationMessage('已转发到 DSH 对话框');
+      vscode.window.showInformationMessage(t('已转发到 DSH 对话框'));
     } else if (msg.status === 'no-frame') {
-      vscode.window.showErrorMessage('转发失败：面板未加载 DSH iframe，请点「刷新」后重试');
+      vscode.window.showErrorMessage(t('转发失败：面板未加载 DSH iframe，请点「刷新」后重试'));
     } else {
-      vscode.window.showErrorMessage('转发失败：未知错误');
+      vscode.window.showErrorMessage(t('转发失败：未知错误'));
     }
   }
 }
@@ -1898,7 +1901,7 @@ async function preparePanelHtml(isTab) {
     return {
       ok: false,
       kind: 'not-installed',
-      reason: '未检测到 DeepSeek Harness (dsh)，且已取消安装。请手动安装后点击“刷新”。'
+      reason: t('未检测到 DeepSeek Harness (dsh)，且已取消安装。请手动安装后点击“刷新”。')
     };
   }
 
@@ -1906,7 +1909,7 @@ async function preparePanelHtml(isTab) {
   const pluginInstalled = await ensureDshPlugins();
   if (pluginInstalled && (await checkUrl(getUrl()))) {
     // 服务已在运行但插件刚装上，需重启 dsh web 才加载。
-    vscode.window.showInformationMessage('已自动安装/更新 DSH 插件（dsh-drop-caret / dsh-webview-clipboard），请点击面板顶部的「重启 dsh web」使其生效。');
+    vscode.window.showInformationMessage(t('已自动安装/更新 DSH 插件（dsh-drop-caret / dsh-webview-clipboard），请点击面板顶部的「重启 dsh web」使其生效。'));
   }
 
   const ok = await ensureRunningOnce();
@@ -1914,7 +1917,7 @@ async function preparePanelHtml(isTab) {
     return {
       ok: false,
       kind: 'unreachable',
-      reason: `无法连接 ${getUrl()}，且自动启动未成功（或已关闭自动启动）。`
+      reason: t('无法连接 {0}，且自动启动未成功（或已关闭自动启动）。', [getUrl()])
     };
   }
 
@@ -1928,8 +1931,7 @@ async function preparePanelHtml(isTab) {
     return {
       ok: false,
       kind: 'unauthorized',
-      reason: 'dsh web 新版启用了浏览器认证，当前实例不是由本窗口启动，无法静默认证。' +
-        '点击面板顶部的「重启 dsh web」，由扩展接管并自动完成认证。'
+      reason: t('dsh web 新版启用了浏览器认证，当前实例不是由本窗口启动，无法静默认证。点击面板顶部的「重启 dsh web」，由扩展接管并自动完成认证。')
     };
   }
   try {
@@ -1943,7 +1945,7 @@ async function preparePanelHtml(isTab) {
 async function render(view) {
   // 标签页已接管 DSH 时，侧边栏不再重复加载（避免双 webview 插件加载互斥），显示占位。
   if (activeTab) {
-    view.description = '在标签页中打开';
+    view.description = t('在标签页中打开');
     view.webview.html = buildSuspendedHtml();
     return;
   }
@@ -1953,7 +1955,7 @@ async function render(view) {
   // await 期间视图可能已被关闭；只有仍是当前活动视图时才继续渲染。
   if (activeView !== view) return;
   if (!r.ok) {
-    view.description = r.kind === 'not-installed' ? '未安装 dsh' : (r.kind === 'unloadable' ? '无法加载' : '未连接');
+    view.description = r.kind === 'not-installed' ? t('未安装 dsh') : (r.kind === 'unloadable' ? t('无法加载') : t('未连接'));
     view.webview.html = buildErrorHtml(r.reason);
     return;
   }
@@ -2020,7 +2022,7 @@ async function dshRpc(base, method, payload, timeoutMs) {
     return result.value;
   }
   const err = result && result.error;
-  const msg = (err && (err.message || err.code)) || ('DSH RPC 失败: ' + method);
+  const msg = (err && (err.message || err.code)) || (t('DSH RPC 失败: ') + method);
   throw new Error(msg);
 }
 
@@ -2132,7 +2134,7 @@ function parseChatSessionText(text) {
       });
     }
   } catch (e) {
-    console.warn('[DeepSeek Harness] 解析会话文本失败：', e && e.message);
+    console.warn(t('[DeepSeek Harness] 解析会话文本失败：'), e && e.message);
   }
   return { sessionId, turns };
 }
@@ -2146,7 +2148,7 @@ function parseChatSessionFile(filePath) {
   try {
     return parseChatSessionText(fs.readFileSync(filePath, 'utf8'));
   } catch (e) {
-    console.warn('[DeepSeek Harness] 解析会话文件失败：', filePath, e && e.message);
+    console.warn(t('[DeepSeek Harness] 解析会话文件失败：'), filePath, e && e.message);
     return { sessionId: null, turns: [] };
   }
 }
@@ -2286,7 +2288,7 @@ function firstLmQuestionText(messages) {
     const role = m && m.role;
     if (role !== 1 && role !== 'user' && role !== 'User') continue;
     const full = lmMessageText(m);
-    if (full.startsWith('用户：')) return stripAttachSuffix(full.slice(3));
+    if (full.startsWith(t('用户：'))) return stripAttachSuffix(full.slice(3));
   }
   return '';
 }
@@ -2297,7 +2299,7 @@ function lastLmUserText(messages) {
     const role = m && m.role;
     if (role !== 1 && role !== 'user' && role !== 'User') continue;
     const full = lmMessageText(m);
-    if (full.startsWith('用户：')) return stripAttachSuffix(full.slice(3));
+    if (full.startsWith(t('用户：'))) return stripAttachSuffix(full.slice(3));
   }
   return '';
 }
@@ -2309,11 +2311,11 @@ function prevLmUserText(messages) {
     const role = m && m.role;
     if (role !== 1 && role !== 'user' && role !== 'User') continue;
     const full = lmMessageText(m);
-    if (!full.startsWith('用户：')) continue;
-    const t = stripAttachSuffix(full.slice(3));
-    if (!t) continue;
+    if (!full.startsWith(t('用户：'))) continue;
+    const body = stripAttachSuffix(full.slice(3));
+    if (!body) continue;
     seen++;
-    if (seen === 2) return t;
+    if (seen === 2) return body;
   }
   return '';
 }
@@ -2325,7 +2327,7 @@ function findLmUserIndex(messages, lastUserText) {
     const role = m && m.role;
     if (role !== 1 && role !== 'user' && role !== 'User') continue;
     const full = lmMessageText(m);
-    if (full.startsWith('用户：') && stripAttachSuffix(full.slice(3)) === lastUserText) return i;
+    if (full.startsWith(t('用户：')) && stripAttachSuffix(full.slice(3)) === lastUserText) return i;
   }
   return -1;
 }
@@ -2556,9 +2558,9 @@ function stripAndExtractAttachments(t) {
  * @param {string} t
  * @returns {string}
  */
-function stripAttachSuffix(t) {
-  const idx = String(t || '').indexOf('\n\n【文件引用】');
-  return idx >= 0 ? t.slice(0, idx).trim() : t;
+function stripAttachSuffix(text) {
+  const idx = String(text || '').indexOf(t('\n\n【文件引用】'));
+  return idx >= 0 ? text.slice(0, idx).trim() : text;
 }
 
 function lmMessageText(m) {
@@ -2591,11 +2593,11 @@ function lmMessageText(m) {
     // 附件容器、提取 filePath 路径，再对剩余文本走提问解析——只透传路径不传内容。
     const noInstr0 = text.replace(/<instructions>[\s\S]*?<\/instructions>/gi, '').trim();
     const { cleaned: noAttach, paths: attachPaths } = stripAndExtractAttachments(noInstr0);
-    const attachSuffix = attachPaths.length ? ('\n\n【文件引用】\n' + attachPaths.map((p) => '- ' + p).join('\n')) : '';
+    const attachSuffix = attachPaths.length ? (t('\n\n【文件引用】\n') + attachPaths.map((p) => '- ' + p).join('\n')) : '';
     if (!noAttach) {
       // 整条消息只有附件：输出引用块（不带「用户：」前缀，身份键会自动跳过，
       // 引用块与其后真正的问题消息一起序列化发给 DSH）
-      return attachPaths.length ? ('【文件引用】\n' + attachPaths.map((p) => '- ' + p).join('\n')) : '';
+      return attachPaths.length ? (t('【文件引用】\n') + attachPaths.map((p) => '- ' + p).join('\n')) : '';
     }
     text = noAttach; // 后续解析都基于剥离附件后的文本，文件内容绝不透传
     // 保留 Copilot 独有记忆（userMemory/sessionMemory/repoMemory 的正文，去掉 XML 包装）
@@ -2604,29 +2606,29 @@ function lmMessageText(m) {
       const rest = text.replace(/<(userMemory|sessionMemory|repoMemory)>\s*[\s\S]*?\s*<\/\1>/g, '').trim();
       if (rest) {
         const innerQ = extractUserRequest(rest);
-        return '【Copilot 记忆】\n' + memText + '\n\n用户：' + (innerQ !== null ? innerQ : rest) + attachSuffix;
+        return t('【Copilot 记忆】\n') + memText + t('\n\n用户：') + (innerQ !== null ? innerQ : rest) + attachSuffix;
       }
-      return '【Copilot 记忆】\n' + memText + attachSuffix;
+      return t('【Copilot 记忆】\n') + memText + attachSuffix;
     }
     // 优先提取 <userRequest> / <prompt> 内的真实提问（VS Code 会把提问包在 <prompt> 里，
     // 前面是 instructions/AGENTS.md 等上下文——只保留提问本身，避免污染会话与身份键）
     const inner = extractUserRequest(text);
-    if (inner !== null) return '用户：' + inner + attachSuffix;
+    if (inner !== null) return t('用户：') + inner + attachSuffix;
     // 剥掉 Copilot instructions 前置说明与 <instructions> 块后，若还有真实内容则继续
     const cleaned = stripCopilotContext(text);
     if (cleaned !== text) {
       if (!cleaned) return ''; // 纯 instructions/上下文 → 丢弃
       text = cleaned;
       const inner2 = extractUserRequest(text);
-      if (inner2 !== null) return '用户：' + inner2 + attachSuffix;
+      if (inner2 !== null) return t('用户：') + inner2 + attachSuffix;
     }
     // 垃圾块开头：剥离前缀保留尾部真实内容，而不是整条丢弃
     if (isJunkUserText(text)) {
       const stripped = stripJunkPrefix(text);
-      if (stripped) return '用户：' + stripped + attachSuffix;
+      if (stripped) return t('用户：') + stripped + attachSuffix;
       return '';
     }
-    return '用户：' + text + attachSuffix;
+    return t('用户：') + text + attachSuffix;
   }
   // 助手消息：剥掉我们上一轮发出的「⏳ 已提交给 DeepSeek Harness…」占位前缀，
   // 避免它作为对话上下文回传给 DSH（保留其后真正的回答内容）
@@ -2649,11 +2651,11 @@ function lmMessageText(m) {
     if (sm) text = text.replace(sm[0], '');
   }
   if (!text.trim()) return '';
-  return '助手：' + text;
+  return t('助手：') + text;
 }
 
 /** DSH 答案在 VS Code 转录里的产地标记（流式回写时作为首段文本）。 */
-const DSH_ANSWER_MARKER = '⏳ 已提交给 DeepSeek Harness';
+const DSH_ANSWER_MARKER = t('⏳ 已提交给 DeepSeek Harness');
 
 /**
  * 提取单条消息的原始文本（不做任何清洗），用于产地标记检测。
@@ -2713,7 +2715,7 @@ function findDshKnownBoundary(messages, lastUserText) {
       const role = m && m.role;
       if (role !== 1 && role !== 'user' && role !== 'User') continue;
       const full = lmMessageText(m);
-      if (!full.startsWith('用户：') || stripAttachSuffix(full.slice(3)) !== lastUserText) continue;
+      if (!full.startsWith(t('用户：')) || stripAttachSuffix(full.slice(3)) !== lastUserText) continue;
       for (let j = i + 1; j < (messages || []).length; j++) {
         const mm = messages[j];
         const r2 = mm && mm.role;
@@ -2740,15 +2742,15 @@ function serializeLmMessages(messages, opts) {
   for (const m of messages || []) {
     const s = lmMessageText(m);
     if (!s) continue;
-    if (s.startsWith('【文件引用】')) {
+    if (s.startsWith(t('【文件引用】'))) {
       // 引用块消息：跨消息去重——VS Code 会把同一文件以 active file 与附件各传一次
       if (emittedBlocks.has(s)) continue;
       emittedBlocks.add(s);
       out.push(s);
       continue;
     }
-    if (markForeign && s.startsWith('助手：')) {
-      out.push('【Copilot 其他模型回答】' + s);
+    if (markForeign && s.startsWith(t('助手：'))) {
+      out.push(t('【Copilot 其他模型回答】') + s);
     } else {
       out.push(s);
     }
@@ -2776,8 +2778,8 @@ function detectSyntheticRequest(messages) {
 }
 
 const SYNTHETIC_PROGRESS_TEXTS = {
-  'edit code': ['正在读取文件…', '正在分析代码结构…', '正在生成修改方案…', '正在编辑文件…', '正在校验修改…', '正在应用更改…', '正在检查语法…', '正在运行测试…', '正在复查结果…', '即将完成…'],
-  'generate code': ['正在理解需求…', '正在设计结构…', '正在生成代码…', '正在组织模块…', '正在补充细节…', '正在检查语法…', '正在优化逻辑…', '正在生成测试…', '正在复查结果…', '即将完成…']
+  'edit code': [t('正在读取文件…'), t('正在分析代码结构…'), t('正在生成修改方案…'), t('正在编辑文件…'), t('正在校验修改…'), t('正在应用更改…'), t('正在检查语法…'), t('正在运行测试…'), t('正在复查结果…'), t('即将完成…')],
+  'generate code': [t('正在理解需求…'), t('正在设计结构…'), t('正在生成代码…'), t('正在组织模块…'), t('正在补充细节…'), t('正在检查语法…'), t('正在优化逻辑…'), t('正在生成测试…'), t('正在复查结果…'), t('即将完成…')]
 };
 
 /**
@@ -2854,7 +2856,7 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
   let effort = uiEffort || String(cfg().get('dshPanel.dshReasoningEffort', '') || '');
   if (EFFORT_MAP[effort]) effort = EFFORT_MAP[effort];
   if (effort && !DSH_EFFORTS.includes(effort)) effort = ''; // 无效档位 → 跟随 DSH 默认
-  const displayModel = fixed ? fixed.model : (chatModel || 'DSH 默认模型');
+  const displayModel = fixed ? fixed.model : (chatModel || t('DSH 默认模型'));
   const selectionKey = provider && chatModel ? (provider + '/' + chatModel + (effort ? '/' + effort : '')) : '';
   const currentPrompt = lastLmUserText(messages);
   // 提前并行定位当前聊天 sessionId（聊天文件名）：落盘有几秒竞态，
@@ -2866,10 +2868,10 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
     if (synthetic) {
       if (synthetic.kind === 'progress') {
         const texts = SYNTHETIC_PROGRESS_TEXTS[synthetic.scenario]
-          || Array.from({ length: Math.min(synthetic.count, 10) }, (_, i) => '正在处理（' + (i + 1) + '/' + Math.min(synthetic.count, 10) + '）…');
+          || Array.from({ length: Math.min(synthetic.count, 10) }, (_, i) => t('正在处理（{0}/{1}）…', [i + 1, Math.min(synthetic.count, 10)]));
         progress.report(makeTextPart(JSON.stringify(texts.slice(0, Math.min(synthetic.count, 10)))));
       } else if (synthetic.kind === 'title') {
-        const title = (synthetic.titleSeed || 'DeepSeek Harness 对话').slice(0, 40);
+        const title = (synthetic.titleSeed || t('DeepSeek Harness 对话')).slice(0, 40);
         progress.report(makeTextPart(title));
       } else {
         progress.report(makeTextPart('[]'));
@@ -2878,12 +2880,12 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
     }
     const installed = await ensureDshInstalled();
     if (!installed) {
-      progress.report(makeTextPart('❌ 未检测到 DeepSeek Harness (dsh)。请安装 npm install -g @deepseek-ai/dsh，或打开 DSH 面板触发自动安装。'));
+      progress.report(makeTextPart(t('❌ 未检测到 DeepSeek Harness (dsh)。请安装 npm install -g @deepseek-ai/dsh，或打开 DSH 面板触发自动安装。')));
       return;
     }
     const running = await ensureRunningOnce();
     if (!running) {
-      progress.report(makeTextPart('❌ 无法连接 DSH 服务（' + getUrl() + '）。请打开 DSH 面板确认其已启动。'));
+      progress.report(makeTextPart(t('❌ 无法连接 DSH 服务（{0}）。请打开 DSH 面板确认其已启动。', [getUrl()])));
       return;
     }
 
@@ -2945,7 +2947,7 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
         };
         fs.writeFileSync(path.join(debugDir, 'lm-messages-' + Date.now() + '.json'), JSON.stringify(dump, null, 2), 'utf8');
       } catch (e) {
-        console.warn('[DeepSeek Harness] 写模型消息调试文件失败：', e && e.message);
+        console.warn(t('[DeepSeek Harness] 写模型消息调试文件失败：'), e && e.message);
       }
     }
 
@@ -3018,7 +3020,7 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
       if (r2 !== 1 && r2 !== 'user' && r2 !== 'User') continue;
       const s = lmMessageText(mm);
       if (s) {
-        const ai = s.indexOf('【文件引用】');
+        const ai = s.indexOf(t('【文件引用】'));
         if (ai >= 0) currentAttachSig = s.slice(ai);
         break;
       }
@@ -3080,7 +3082,7 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
     entry.completed = false;
     entry.lastUsedAt = Date.now();
     await gContext.globalState.update(DSH_MODEL_MAP_KEY, map);
-    if (!taskText.trim()) taskText = '用户：' + currentPrompt;
+    if (!taskText.trim()) taskText = t('用户：') + currentPrompt;
     // 先取事件游标（必须在提交任务之前，避免把 turn/start 一并吃掉导致流式判定失效）
     const timeoutMs = Number(cfg().get('dshPanel.chatTimeoutMs', 900000)) || 900000;
     const deadline = Date.now() + timeoutMs;
@@ -3101,14 +3103,14 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
       mode: 'queue',
       content: [{ type: 'text', text: taskText }]
     }, 30000);
-    progress.report(makeTextPart('⏳ 已提交给 DeepSeek Harness（' + displayModel + (effort ? ' · 档位 ' + effort : '') + '）' + (isNewSession ? '（新会话）' : '（续聊）') + '，正在执行…\n\n'));
-    console.log('[DeepSeek Harness] dsh 模型请求已提交，session=' + sid);
+    progress.report(makeTextPart(t('⏳ 已提交给 DeepSeek Harness（{0}{1}）{2}，正在执行…', [displayModel, effort ? t(' · 档位 ') + effort : '', isNewSession ? t('（新会话）') : t('（续聊）')]) + t('\n\n')));
+    console.log(t('[DeepSeek Harness] dsh 模型请求已提交，session=') + sid);
 
     while (Date.now() < deadline) {
       if (token.isCancellationRequested) {
         entry.pending = false;
         try { await gContext.globalState.update(DSH_MODEL_MAP_KEY, map); } catch (_) {}
-        progress.report(makeTextPart('\n\n> ⏹ 已停止等待。任务仍在 DSH 中运行，可到 DSH 面板查看。'));
+        progress.report(makeTextPart('\n\n> ' + t('⏹ 已停止等待。任务仍在 DSH 中运行，可到 DSH 面板查看。')));
         return;
       }
       let hist;
@@ -3117,7 +3119,7 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
       } catch (e) {
         entry.pending = false;
         try { await gContext.globalState.update(DSH_MODEL_MAP_KEY, map); } catch (_) {}
-        progress.report(makeTextPart('\n\n> ⚠️ 读取 DSH 任务状态失败：' + e.message + '（任务可能仍在运行，可到 DSH 面板查看）'));
+        progress.report(makeTextPart('\n\n> ' + t('⚠️ 读取 DSH 任务状态失败：{0}（任务可能仍在运行，可到 DSH 面板查看）', [e.message])));
         return;
       }
       const events = (hist && Array.isArray(hist.events)) ? hist.events : [];
@@ -3138,9 +3140,9 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
           const reason = e.data && e.data.reason;
           if (reason && reason.kind !== 'completed') {
             const errDesc = reason.error ? (reason.error.code + ': ' + reason.error.message) : reason.kind;
-            progress.report(makeTextPart('\n\n> ⚠️ DSH 任务未正常完成（' + errDesc + '）。可到 DSH 面板查看。'));
+            progress.report(makeTextPart('\n\n> ' + t('⚠️ DSH 任务未正常完成（{0}）。可到 DSH 面板查看。', [errDesc])));
           }
-          console.log('[DeepSeek Harness] dsh 模型请求完成');
+          console.log(t('[DeepSeek Harness] dsh 模型请求完成'));
           entry.pending = false;
           entry.completed = true;
           try { await gContext.globalState.update(DSH_MODEL_MAP_KEY, map); } catch (_) {}
@@ -3151,9 +3153,9 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
     }
     entry.pending = false;
     try { await gContext.globalState.update(DSH_MODEL_MAP_KEY, map); } catch (_) {}
-    progress.report(makeTextPart('\n\n> ⏱ 超过等待上限（' + Math.round(timeoutMs / 60000) + ' 分钟）仍未完成。任务仍在 DSH 面板运行。'));
+    progress.report(makeTextPart('\n\n> ' + t('⏱ 超过等待上限（{0} 分钟）仍未完成。任务仍在 DSH 面板运行。', [Math.round(timeoutMs / 60000)])));
   } catch (e) {
-    progress.report(makeTextPart('❌ DSH 模型执行出错：' + (e && e.message ? e.message : String(e))));
+    progress.report(makeTextPart(t('❌ DSH 模型执行出错：{0}', [e && e.message ? e.message : String(e)])));
   }
 }
 
@@ -3195,7 +3197,7 @@ async function selectModelForSession(base, sid, provider, chatModel, effort) {
  */
 function registerDshModelProvider(context) {
   if (!vscode.lm || typeof vscode.lm.registerLanguageModelChatProvider !== 'function') {
-    console.warn('[DeepSeek Harness] vscode.lm 不可用，跳过 dsh 语言模型提供方注册');
+    console.warn(t('[DeepSeek Harness] vscode.lm 不可用，跳过 dsh 语言模型提供方注册'));
     return;
   }
   if (!cfg().get('dshPanel.enableDshModel', true)) return;
@@ -3208,26 +3210,26 @@ function registerDshModelProvider(context) {
     // languageModelChatInformation 顶级字段渲染「推理档位」配置 pill。成本用合法货币串
     // （避免 '—' 这类非法值），reasoningEffort 属性带 group:'navigation'。
     const dshModelDefs = [
-      { id: 'dsh', name: 'DSH (DeepSeek Harness)', detail: '默认：跟随 DSH 设置模型 · 档位可配',
+      { id: 'dsh', name: 'DSH (DeepSeek Harness)', detail: t('默认：跟随 DSH 设置模型 · 档位可配'),
         cost: { inputCost: '$0.14', outputCost: '$0.28', cacheCost: '$0.0028' } },
-      { id: 'dsh-deepseek-v4-pro', name: 'DeepSeek-V4-Pro (DSH)', detail: 'DeepSeek 官方 · 档位 off/low/high/max',
+      { id: 'dsh-deepseek-v4-pro', name: 'DeepSeek-V4-Pro (DSH)', detail: t('DeepSeek 官方 · 档位 off/low/high/max'),
         cost: { inputCost: '$0.435', outputCost: '$0.87', cacheCost: '$0.003625' } },
-      { id: 'dsh-deepseek-v4-flash', name: 'DeepSeek-V4-Flash (DSH)', detail: 'DeepSeek 官方 · 档位 off/low/high/max',
+      { id: 'dsh-deepseek-v4-flash', name: 'DeepSeek-V4-Flash (DSH)', detail: t('DeepSeek 官方 · 档位 off/low/high/max'),
         cost: { inputCost: '$0.14', outputCost: '$0.28', cacheCost: '$0.0028' } },
-      { id: 'dsh-deepseek-v4-flash-vision-exp', name: 'deepseek-v4-flash-vision-exp (DSH)', detail: 'DeepSeek 官方视觉模型 · 档位 off/low/high/max',
+      { id: 'dsh-deepseek-v4-flash-vision-exp', name: 'deepseek-v4-flash-vision-exp (DSH)', detail: t('DeepSeek 官方视觉模型 · 档位 off/low/high/max'),
         cost: { inputCost: '$0.14', outputCost: '$0.28', cacheCost: '$0.0028' } }
     ];
     const dshReasoningEffortSchema = {
       type: 'string',
-      title: '推理档位',
+      title: t('推理档位'),
       default: 'high',
       enum: ['none', 'low', 'high', 'max'],
-      enumItemLabels: ['关闭（off）', '低', '高', '最高'],
+      enumItemLabels: [t('关闭（off）'), t('低'), t('高'), t('最高')],
       enumDescriptions: [
-        '关闭推理（对应 DSH 档位 off）',
-        '低档推理',
-        '高档推理（DSH 默认档位）',
-        '最高档推理'
+        t('关闭推理（对应 DSH 档位 off）'),
+        t('低档推理'),
+        t('高档推理（DSH 默认档位）'),
+        t('最高档推理')
       ],
       group: 'navigation'
     };
@@ -3240,7 +3242,7 @@ function registerDshModelProvider(context) {
           family: 'dsh',
           version: '0.8.9',
           detail: m.detail,
-          tooltip: 'DeepSeek Harness：在工作区解析任务、执行工具后解答；模型与推理档位可配置',
+          tooltip: t('DeepSeek Harness：在工作区解析任务、执行工具后解答；模型与推理档位可配置'),
           maxInputTokens: 250000,
           maxOutputTokens: 128000,
           // 门控字段（对齐 vizards：isBYOK/isUserSelectable 让模型可被选、可配置）
@@ -3289,9 +3291,9 @@ function registerDshModelProvider(context) {
     setTimeout(() => { try { vscode.lm.selectChatModels({ vendor: 'dsh' }).catch(() => {}); } catch (_) { /* 忽略 */ } }, 700);
     context.subscriptions.push(dshModelEmitter);
     dshModelProviderRegistered = true;
-    console.log('[DeepSeek Harness] dsh 语言模型提供方已注册（模型选择器可见），已触发模型信息刷新');
+    console.log(t('[DeepSeek Harness] dsh 语言模型提供方已注册（模型选择器可见），已触发模型信息刷新'));
   } catch (e) {
-    console.error('[DeepSeek Harness] 注册 dsh 语言模型提供方失败：', e);
+    console.error(t('[DeepSeek Harness] 注册 dsh 语言模型提供方失败：'), e);
   }
 }
 
@@ -3334,9 +3336,9 @@ async function diagnoseModels() {
     }
     const file = path.join(debugDir, 'models-diagnose.json');
     fs.writeFileSync(file, JSON.stringify({ ts: Date.now(), vendors }, null, 2), 'utf8');
-    vscode.window.showInformationMessage('模型注册表诊断已写入：' + file);
+    vscode.window.showInformationMessage(t('模型注册表诊断已写入：{0}', [file]));
   } catch (e) {
-    vscode.window.showErrorMessage('诊断失败：' + (e && e.message ? e.message : String(e)));
+    vscode.window.showErrorMessage(t('诊断失败：{0}', [e && e.message ? e.message : String(e)]));
   }
 }
 
@@ -3349,13 +3351,13 @@ async function showChatStatus() {
   const model = cfg().get('dshPanel.chatModel', '');
   const effort = cfg().get('dshPanel.dshReasoningEffort', '');
   const lines = [
-    'DeepSeek Harness DSH 状态',
-    'DSH 服务可达: ' + (reachable ? '是 (' + getUrl() + ')' : '否'),
-    'Web 认证: ' + (await authStatusText()),
-    'dsh 语言模型提供方: ' + (dshModelProviderRegistered ? '已注册（模型选择器可见）' : '未注册'),
-    '模型配置: provider=' + (provider || '(跟随 DSH 默认)') + ' / model=' + (model || '(跟随 DSH 默认)'),
-    '推理档位: ' + (effort || '(跟随 DSH 默认)'),
-    '已映射聊天数: ' + Object.keys(gContext.globalState.get(DSH_MODEL_MAP_KEY) || {}).length
+    t('DeepSeek Harness DSH 状态'),
+    t('DSH 服务可达: {0}', [reachable ? t('是 ({0})', [getUrl()]) : t('否')]),
+    t('Web 认证: {0}', [await authStatusText()]),
+    t('dsh 语言模型提供方: {0}', [dshModelProviderRegistered ? t('已注册（模型选择器可见）') : t('未注册')]),
+    t('模型配置: provider={0} / model={1}', [provider || t('(跟随 DSH 默认)'), model || t('(跟随 DSH 默认)')]),
+    t('推理档位: {0}', [effort || t('(跟随 DSH 默认)')]),
+    t('已映射聊天数: {0}', [Object.keys(gContext.globalState.get(DSH_MODEL_MAP_KEY) || {}).length])
   ];
   vscode.window.showInformationMessage(lines.join('\n'), { modal: false });
 }
@@ -3367,20 +3369,29 @@ async function showChatStatus() {
 async function authStatusText() {
   const proxy = await ensureAuthProxy();
   if (!proxy) {
-    return '未启用受管认证代理（Remote 场景或目标非回环地址），面板走直连';
+    return t('未启用受管认证代理（Remote 场景或目标非回环地址），面板走直连');
   }
   const s = proxy.status();
   if (proxy.hasCookieForBase()) {
-    return '已认证（受管代理 ' + s.proxy + '）';
+    return t('已认证（受管代理 {0}）', [s.proxy]);
   }
   if (!s.tokenKnown) {
-    return '未认证（尚未捕获 dsh 启动令牌；若 dsh 正在运行且返回 401，请重启 dsh web 由扩展接管）';
+    return t('未认证（尚未捕获 dsh 启动令牌；若 dsh 正在运行且返回 401，请重启 dsh web 由扩展接管）');
   }
-  return '令牌已捕获，Cookie 换发中/失败（代理 ' + s.proxy + '）';
+  return t('令牌已捕获，Cookie 换发中/失败（代理 {0}）', [s.proxy]);
 }
 
 function activate(context) {
   gContext = context;
+  // Apply English on top of the manifest the extension host passes us. VS Code
+  // already resolves package.nls.json at scan time for the Extensions view and the
+  // Settings UI; this covers the copy handed to the extension itself, so no Chinese
+  // survives into settings keys, defaults or contributed metadata we read back.
+  try {
+    applyManifestTranslations(context && context.extension && context.extension.packageJSON);
+  } catch (e) {
+    console.error('[DeepSeek Harness] manifest localization failed:', e && e.message);
+  }
   registerDshModelProvider(context);
 
   const provider = {
@@ -3438,7 +3449,7 @@ function activate(context) {
     activeTab = panel;
     // 标签页接管 DSH：侧边栏若已打开则改为占位，避免双 webview 同时加载 DSH 互斥。
     if (activeView) {
-      activeView.description = '在标签页中打开';
+      activeView.description = t('在标签页中打开');
       activeView.webview.html = buildSuspendedHtml();
     }
     let disposed = false;
@@ -3451,8 +3462,8 @@ function activate(context) {
         panel.webview.html = r.ok ? r.html : buildErrorHtml(r.reason);
       } catch (e) {
         if (disposed) return;
-        console.error('[DeepSeek Harness] 标签页渲染失败：', e);
-        panel.webview.html = buildErrorHtml('标签页渲染失败：' + (e && e.message ? e.message : String(e)));
+        console.error(t('[DeepSeek Harness] 标签页渲染失败：'), e);
+        panel.webview.html = buildErrorHtml(t('标签页渲染失败：{0}', [e && e.message ? e.message : String(e)]));
       }
     };
     tabReloadFn = reloadTab;
@@ -3488,7 +3499,7 @@ function activate(context) {
       // 服务在线时 ensureRunningOnce 仅复用不重启，不影响 dsh web 进程与运行中的任务。
       render(activeView);
     } else {
-      vscode.window.showInformationMessage('DeepSeek Harness 面板尚未打开，请先点击侧边栏图标。');
+      vscode.window.showInformationMessage(t('DeepSeek Harness 面板尚未打开，请先点击侧边栏图标。'));
     }
   });
 
@@ -3505,7 +3516,7 @@ function activate(context) {
 
   const restartCmd = vscode.commands.registerCommand('dshPanel.restart', async () => {
     if (!activeView) {
-      vscode.window.showInformationMessage('DeepSeek Harness 面板尚未打开，请先点击侧边栏图标。');
+      vscode.window.showInformationMessage(t('DeepSeek Harness 面板尚未打开，请先点击侧边栏图标。'));
       return;
     }
     const view = activeView;
@@ -3515,23 +3526,23 @@ function activate(context) {
     const running = await checkUrl(getUrl());
     if (running && !managedChild) {
       const choice = await vscode.window.showWarningMessage(
-        '当前 dsh web 不是由本窗口启动的，重启会中断所有正在使用它的窗口及其任务。确定要重启吗？',
+        t('当前 dsh web 不是由本窗口启动的，重启会中断所有正在使用它的窗口及其任务。确定要重启吗？'),
         { modal: true },
-        '重启'
+        t('重启')
       );
-      if (choice !== '重启') {
+      if (choice !== t('重启')) {
         return;
       }
     }
 
-    view.description = '正在重启';
+    view.description = t('正在重启');
     view.webview.html = buildLoadingHtml();
 
     const installed = await ensureDshInstalled();
     if (activeView !== view) return;
     if (!installed) {
-      view.description = '未安装 dsh';
-      view.webview.html = buildErrorHtml('未检测到 DeepSeek Harness (dsh)，无法重启。请先安装后重试。');
+      view.description = t('未安装 dsh');
+      view.webview.html = buildErrorHtml(t('未检测到 DeepSeek Harness (dsh)，无法重启。请先安装后重试。'));
       return;
     }
 
@@ -3543,20 +3554,20 @@ function activate(context) {
       if (activeView !== view) return;
       if (target.unauthorized) {
         maybeGuideAuth(false);
-        view.description = '等待认证';
-        view.webview.html = buildErrorHtml('dsh web 需要浏览器认证，且当前实例无法静默认证。请查看通知提示完成接管或粘贴认证链接。');
+        view.description = t('等待认证');
+        view.webview.html = buildErrorHtml(t('dsh web 需要浏览器认证，且当前实例无法静默认证。请查看通知提示完成接管或粘贴认证链接。'));
         return;
       }
       view.description = getUrl();
       try {
         view.webview.html = buildIframeHtml(target.displayUrl, getFontScale());
       } catch (e) {
-        view.description = '无法加载';
+        view.description = t('无法加载');
         view.webview.html = buildErrorHtml(e.message);
       }
     } else {
-      view.description = '重启失败';
-      view.webview.html = buildErrorHtml('重启 dsh web 后仍无法连接，请确认端口未被占用或 dsh 可正常启动。');
+      view.description = t('重启失败');
+      view.webview.html = buildErrorHtml(t('重启 dsh web 后仍无法连接，请确认端口未被占用或 dsh 可正常启动。'));
     }
   });
 
@@ -3571,12 +3582,12 @@ function activate(context) {
     // 发送目标：优先编辑器标签页，其次侧边栏面板。
     const target = activeTab || activeView;
     if (!editor || !target) {
-      vscode.window.showWarningMessage('请先打开 DeepSeek Harness 面板或标签页并选中代码');
+      vscode.window.showWarningMessage(t('请先打开 DeepSeek Harness 面板或标签页并选中代码'));
       return;
     }
     const selection = editor.selection;
     if (selection.isEmpty) {
-      vscode.window.showWarningMessage('请先选中代码片段');
+      vscode.window.showWarningMessage(t('请先选中代码片段'));
       return;
     }
     const document = editor.document;
@@ -3595,25 +3606,25 @@ function activate(context) {
     });
 
     if (ok) {
-      vscode.window.showInformationMessage('已发送选中内容到 DSH，等待面板转发…');
+      vscode.window.showInformationMessage(t('已发送选中内容到 DSH，等待面板转发…'));
     } else {
-      vscode.window.showErrorMessage('发送失败：DSH 面板 webview 未就绪，请先打开面板并等待加载完成');
+      vscode.window.showErrorMessage(t('发送失败：DSH 面板 webview 未就绪，请先打开面板并等待加载完成'));
     }
   });
 
   const diagnoseModelsCmd = vscode.commands.registerCommand('dshPanel.diagnoseModels', () => {
-    diagnoseModels().catch((e) => vscode.window.showErrorMessage('诊断失败：' + (e && e.message ? e.message : String(e))));
+    diagnoseModels().catch((e) => vscode.window.showErrorMessage(t('诊断失败：{0}', [e && e.message ? e.message : String(e)])));
   });
 
   const chatStatusCmd = vscode.commands.registerCommand('dshPanel.chatStatus', () => {
-    showChatStatus().catch((e) => vscode.window.showErrorMessage('检查 DSH 状态失败：' + (e && e.message ? e.message : String(e))));
+    showChatStatus().catch((e) => vscode.window.showErrorMessage(t('检查 DSH 状态失败：{0}', [e && e.message ? e.message : String(e)])));
   });
 
   const resetChatCmd = vscode.commands.registerCommand('dshPanel.resetChatMapping', async () => {
     if (gContext) {
       await gContext.globalState.update(DSH_MODEL_MAP_KEY, {});
     }
-    vscode.window.showInformationMessage('已重置 DSH 会话映射：下次提问将创建新的 DSH 会话。');
+    vscode.window.showInformationMessage(t('已重置 DSH 会话映射：下次提问将创建新的 DSH 会话。'));
   });
 
   context.subscriptions.push(viewSub, openInTabCmd, refreshCmd, openBrowserCmd, restartCmd, wsSub, sendSelectionCmd, chatStatusCmd, diagnoseModelsCmd, resetChatCmd);

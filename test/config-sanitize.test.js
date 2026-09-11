@@ -1,5 +1,5 @@
 'use strict';
-/** 配置输入净化测试（PR #12 安全审计的回归用例）。运行：node test/config-sanitize.test.js */
+/** Configuration input sanitization tests (regression cases from the PR #12 security audit). Run: node test/config-sanitize.test.js */
 const assert = require('assert');
 const path = require('path');
 const Module = require('module');
@@ -21,36 +21,36 @@ const { getHost, getPort, getDshCommand, sanitizeCommand } = require(path.join(_
 
 let passed = 0;
 function ok(cond, name) {
-  if (!cond) { console.error('  ✗ ' + name); throw new Error('断言失败: ' + name); }
+  if (!cond) { console.error('  ✗ ' + name); throw new Error('Assertion failed: ' + name); }
   passed += 1;
   console.log('  ✓ ' + name);
 }
 function caseOf(setter, actual, want, name) {
   setter();
   const got = typeof actual === 'function' ? actual() : actual;
-  assert.deepStrictEqual(got, want, name + '（实际 ' + JSON.stringify(got) + '）');
+  assert.deepStrictEqual(got, want, name + ' (actual ' + JSON.stringify(got) + ')');
   ok(true, name);
 }
 
-console.log('[1] dshPanel.port（number 型声明但原始值直通）');
-caseOf(() => { settings['dshPanel.port'] = '3080 && calc'; }, () => getPort(), 3080, '字符串注入 → 回退 3080');
-caseOf(() => { settings['dshPanel.port'] = '4000'; }, () => getPort(), 4000, '纯数字字符串仍可用');
-caseOf(() => { settings['dshPanel.port'] = 99999; }, () => getPort(), 3080, '越界端口 → 回退 3080');
-caseOf(() => { settings['dshPanel.port'] = -1; }, () => getPort(), 3080, '负端口 → 回退 3080');
-caseOf(() => { settings['dshPanel.port'] = 3000.9; }, () => getPort(), 3000, '小数 → 取整');
+console.log('[1] dshPanel.port (declared as number, but the raw value passes straight through)');
+caseOf(() => { settings['dshPanel.port'] = '3080 && calc'; }, () => getPort(), 3080, 'string injection → falls back to 3080');
+caseOf(() => { settings['dshPanel.port'] = '4000'; }, () => getPort(), 4000, 'a purely numeric string still works');
+caseOf(() => { settings['dshPanel.port'] = 99999; }, () => getPort(), 3080, 'out-of-range port → falls back to 3080');
+caseOf(() => { settings['dshPanel.port'] = -1; }, () => getPort(), 3080, 'negative port → falls back to 3080');
+caseOf(() => { settings['dshPanel.port'] = 3000.9; }, () => getPort(), 3000, 'decimal → truncated to an integer');
 
-console.log('[2] dshPanel.host（字符串型设置）');
-caseOf(() => { settings['dshPanel.host'] = '127.0.0.1 & calc'; }, () => getHost(), '127.0.0.1', 'shell 元字符 → 回退 127.0.0.1');
-caseOf(() => { settings['dshPanel.host'] = 'my-dsh.local'; }, () => getHost(), 'my-dsh.local', '合法域名保留');
-caseOf(() => { settings['dshPanel.host'] = '::1'; }, () => getHost(), '::1', 'IPv6 字面量保留');
+console.log('[2] dshPanel.host (a string setting)');
+caseOf(() => { settings['dshPanel.host'] = '127.0.0.1 & calc'; }, () => getHost(), '127.0.0.1', 'shell metacharacters → falls back to 127.0.0.1');
+caseOf(() => { settings['dshPanel.host'] = 'my-dsh.local'; }, () => getHost(), 'my-dsh.local', 'a valid hostname is kept');
+caseOf(() => { settings['dshPanel.host'] = '::1'; }, () => getHost(), '::1', 'an IPv6 literal is kept');
 
-console.log('[3] dshPanel.dshCommand（字符串型命令路径）');
-caseOf(() => { settings['dshPanel.dshCommand'] = 'dsh & calc'; }, () => getDshCommand(), 'dsh', '元字符注入 → 回退 dsh');
-caseOf(() => { settings['dshPanel.dshCommand'] = 'C:\my tools\dsh.cmd'; }, () => getDshCommand(), 'C:\my tools\dsh.cmd', '带空格的合法路径保留（启动前自动加引号）');
-ok(sanitizeCommand('dsh\r malicious') === null, '回车/换行拒绝');
-ok(sanitizeCommand('dsh`id`') === null, '反引号拒绝');
-ok(sanitizeCommand('dsh|calc') === null, '管道拒绝');
-ok(sanitizeCommand('dsh>nul') === null, '重定向拒绝');
+console.log('[3] dshPanel.dshCommand (a string command path)');
+caseOf(() => { settings['dshPanel.dshCommand'] = 'dsh & calc'; }, () => getDshCommand(), 'dsh', 'metacharacter injection → falls back to dsh');
+caseOf(() => { settings['dshPanel.dshCommand'] = 'C:\my tools\dsh.cmd'; }, () => getDshCommand(), 'C:\my tools\dsh.cmd', 'a valid path with spaces is kept (quoted automatically before launch)');
+ok(sanitizeCommand('dsh\r malicious') === null, 'carriage return / line feed rejected');
+ok(sanitizeCommand('dsh`id`') === null, 'backtick rejected');
+ok(sanitizeCommand('dsh|calc') === null, 'pipe rejected');
+ok(sanitizeCommand('dsh>nul') === null, 'redirection rejected');
 
-console.log('\n全部通过：' + passed + ' 项断言 ✓');
+console.log('\nAll passed: ' + passed + ' assertions ✓');
 process.exit(0);

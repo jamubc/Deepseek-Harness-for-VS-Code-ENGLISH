@@ -1,15 +1,15 @@
 'use strict';
 /**
- * 受管认证代理单元测试（不依赖 VS Code / 真实 dsh）。
- * 运行：node test/auth-proxy.test.js
- * 覆盖：
- *  1) extractTokenParam 各种输入
- *  2) 控制组：裸地址直连新版 dsh（模拟）返回 401
- *  3) 代理 + onToken 后：/ 200、/api POST 200（Cookie 由代理注入）
- *  4) dsh 同端口重启（新令牌+新密钥）：旧 Cookie 失效 → 401 自动重换 → 200
- *  5) SSE 流式转发不被缓冲（分块到达）
- *  6) WebSocket 升级透传（注入 Cookie，双向数据）
- *  7) localhost 来源（标签页隔离）按 authority 独立换发 Cookie
+ * Managed auth proxy unit tests (no VS Code or real dsh required).
+ * Run: node test/auth-proxy.test.js
+ * Covers:
+ *  1) extractTokenParam with various inputs
+ *  2) Control group: bare address straight to the new dsh (simulated) returns 401
+ *  3) After the proxy + onToken: / returns 200, POST /api returns 200 (the Cookie is injected by the proxy)
+ *  4) dsh restart on the same port (new token + new secret): the old Cookie goes stale → automatic re-exchange → 200
+ *  5) SSE streaming is forwarded without buffering (chunks arrive separately)
+ *  6) WebSocket upgrade passthrough (Cookie injected, data in both directions)
+ *  7) localhost origin (tab isolation) exchanges its own Cookie per authority
  */
 const http = require('http');
 const crypto = require('crypto');
@@ -39,7 +39,7 @@ Module._load = function (request, parent, isMain) {
 const ext = require(path.join(__dirname, '..', 'extension.js'));
 const { ensureAuthProxy, learnDshToken, extractTokenParam } = ext.__internals;
 
-// ---------------- 模拟新版 dsh web 认证 ----------------
+// ---------------- simulated new-version dsh web authentication ----------------
 function b64url(buf) { return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 
 class FakeDsh {
@@ -130,8 +130,8 @@ class FakeDsh {
   }
 }
 
-// ---------------- 小工具 ----------------
-// 测试用短连接 agent：禁用 keep-alive，避免 server.close() 被空闲连接挂住。
+// ---------------- helpers ----------------
+// Short-lived agent for tests: keep-alive is disabled so server.close() is not held up by idle connections.
 const testAgent = new http.Agent({ keepAlive: false, maxSockets: 8 });
 function request(port, method, reqPath, { body = null, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
@@ -152,61 +152,61 @@ function request(port, method, reqPath, { body = null, headers = {} } = {}) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passed = 0;
 function ok(cond, name) {
-  if (!cond) { console.error('  ✗ ' + name); throw new Error('断言失败: ' + name); }
+  if (!cond) { console.error('  ✗ ' + name); throw new Error('Assertion failed: ' + name); }
   passed += 1;
   console.log('  ✓ ' + name);
 }
 
-// ---------------- 用例 ----------------
+// ---------------- test cases ----------------
 async function main() {
   console.log('[1] extractTokenParam');
-  ok(extractTokenParam('http://127.0.0.1:3080/?token=abcABC012-_xyz90') === 'abcABC012-_xyz90', '完整链接提取');
-  ok(extractTokenParam('dsh web: http://127.0.0.1:3080/?token=TOKEN123 (LAN: http://192.168.1.2:3080/?token=TOKEN123)') === 'TOKEN123', '整行提取');
-  ok(extractTokenParam('PLAIN_TOKEN_abcd12345678') === 'PLAIN_TOKEN_abcd12345678', '裸令牌');
-  ok(extractTokenParam('http://127.0.0.1:3080/') === null, '无令牌返回 null');
-  ok(extractTokenParam('') === null, '空输入');
+  ok(extractTokenParam('http://127.0.0.1:3080/?token=abcABC012-_xyz90') === 'abcABC012-_xyz90', 'token extracted from a full URL');
+  ok(extractTokenParam('dsh web: http://127.0.0.1:3080/?token=TOKEN123 (LAN: http://192.168.1.2:3080/?token=TOKEN123)') === 'TOKEN123', 'token extracted from a whole line');
+  ok(extractTokenParam('PLAIN_TOKEN_abcd12345678') === 'PLAIN_TOKEN_abcd12345678', 'bare token');
+  ok(extractTokenParam('http://127.0.0.1:3080/') === null, 'no token returns null');
+  ok(extractTokenParam('') === null, 'empty input');
 
   const dsh = new FakeDsh();
   await dsh.listen(31117);
 
-  console.log('[2] 控制组：裸地址直连新版 dsh → 401');
+  console.log('[2] Control group: bare address straight to the new dsh → 401');
   const direct = await request(31117, 'GET', '/');
-  ok(direct.status === 401, '直连 / 返回 401');
-  ok(/authentication required/.test(direct.body), '401 文案匹配');
+  ok(direct.status === 401, 'direct / returns 401');
+  ok(/authentication required/.test(direct.body), '401 message matches');
 
-  console.log('[3] 代理 + 令牌 → 无感认证');
+  console.log('[3] proxy + token → invisible authentication');
   const proxy = await ensureAuthProxy();
-  ok(proxy !== null, '本地受管代理已创建（生产入口 ensureAuthProxy）');
-  ok(!learnDshToken('http://127.0.0.1:3080/'), '无令牌链接学习失败');
-  ok(learnDshToken('dsh web: ' + FAKE_DSH_URL + '/?token=' + dsh.token), '从 stdout 行学习令牌');
+  ok(proxy !== null, 'local managed proxy created (production entry point ensureAuthProxy)');
+  ok(!learnDshToken('http://127.0.0.1:3080/'), 'a link without a token is not learned');
+  ok(learnDshToken('dsh web: ' + FAKE_DSH_URL + '/?token=' + dsh.token), 'token learned from the stdout line');
   await proxy.waitAuthed(3000);
-  ok(proxy.hasCookieForBase(), '127.0.0.1 来源 Cookie 已换发');
+  ok(proxy.hasCookieForBase(), 'Cookie exchanged for the 127.0.0.1 origin');
   const pport = proxy.port();
   const viaProxy = await request(pport, 'GET', '/');
-  ok(viaProxy.status === 200 && /FAKE-DSH-INDEX/.test(viaProxy.body), '经代理访问 / 返回 200 首页');
+  ok(viaProxy.status === 200 && /FAKE-DSH-INDEX/.test(viaProxy.body), 'GET / through the proxy returns the 200 home page');
   const echo = await request(pport, 'POST', '/api/echo', { body: JSON.stringify({ hello: 'dsh' }), headers: { 'content-type': 'application/json' } });
-  ok(echo.status === 200 && JSON.parse(echo.body).echoed === '{"hello":"dsh"}', '经代理 POST /api/echo 正常');
-  ok(JSON.parse(echo.body).host === '127.0.0.1:' + pport, '上游收到 Host=代理 authority（围栏一致）');
+  ok(echo.status === 200 && JSON.parse(echo.body).echoed === '{"hello":"dsh"}', 'POST /api/echo through the proxy works');
+  ok(JSON.parse(echo.body).host === '127.0.0.1:' + pport, 'upstream sees Host = proxy authority (fence consistent)');
 
-  console.log('[4] dsh 同端口重启（新令牌+新密钥）→ 401 自动重换');
-  await dsh.close(); // 模拟 dsh 进程退出
-  const dsh2 = new FakeDsh(); // 新进程：新 token/secret
+  console.log('[4] dsh restart on the same port (new token + new secret) → automatic 401 re-exchange');
+  await dsh.close(); // simulate the dsh process exiting
+  const dsh2 = new FakeDsh(); // new process: new token/secret
   await dsh2.listen(31117);
-  ok(learnDshToken(FAKE_DSH_URL + '/?token=' + dsh2.token), '学习新令牌（重启后 stdout）');
+  ok(learnDshToken(FAKE_DSH_URL + '/?token=' + dsh2.token), 'new token learned (stdout after the restart)');
   await sleep(50);
   const afterRestart = await request(pport, 'GET', '/');
-  ok(afterRestart.status === 200 && /FAKE-DSH-INDEX/.test(afterRestart.body), '旧 Cookie 失效后自动重换并重试成功');
+  ok(afterRestart.status === 200 && /FAKE-DSH-INDEX/.test(afterRestart.body), 'stale Cookie triggers an automatic re-exchange and the retry succeeds');
   const echo2 = await request(pport, 'POST', '/api/echo', { body: '2', headers: { 'content-type': 'text/plain' } });
-  ok(echo2.status === 200, '重启后 API 继续可用');
+  ok(echo2.status === 200, 'the API keeps working after the restart');
 
-  console.log('[5] SSE 流式转发不被缓冲');
+  console.log('[5] SSE streaming is forwarded without buffering');
   const t0 = Date.now();
   const stream = await request(pport, 'GET', '/api/stream');
   const spread = stream.times[stream.times.length - 1] - t0;
-  ok(stream.status === 200 && stream.body.includes('chunk-3'), '流内容完整');
-  ok(spread >= 300, '分块到达（总耗时 ' + spread + 'ms ≥ 300ms，未整体缓冲）');
+  ok(stream.status === 200 && stream.body.includes('chunk-3'), 'stream content is complete');
+  ok(spread >= 300, 'chunks arrive separately (total ' + spread + 'ms ≥ 300ms, not buffered as a whole)');
 
-  console.log('[6] WebSocket 升级透传');
+  console.log('[6] WebSocket upgrade passthrough');
   const wsResult = await new Promise((resolve) => {
     const sock = net.connect(pport, '127.0.0.1');
     let buf = '';
@@ -234,9 +234,9 @@ async function main() {
     });
     sock.on('close', () => { if (phase !== 'done') resolve({ ok: false }); });
   });
-  ok(wsResult.ok, 'WS 握手 101 + 注入 Cookie + 双向数据');
+  ok(wsResult.ok, 'WS handshake 101 + Cookie injected + data in both directions');
 
-  console.log('[7] localhost 来源（标签页隔离）独立换发');
+  console.log('[7] localhost origin (tab isolation) exchanges independently');
   const viaLocalhost = await new Promise((resolve, reject) => {
     const req = http.request({ host: '127.0.0.1', port: pport, path: '/', method: 'GET', agent: testAgent, headers: { host: 'localhost:' + pport } }, (res) => {
       const chunks = [];
@@ -246,15 +246,15 @@ async function main() {
     req.on('error', reject);
     req.end();
   });
-  ok(viaLocalhost.status === 200 && /FAKE-DSH-INDEX/.test(viaLocalhost.body), 'Host=localhost 来源自动换发并通过');
+  ok(viaLocalhost.status === 200 && /FAKE-DSH-INDEX/.test(viaLocalhost.body), 'Host=localhost origin is exchanged automatically and passes');
 
-  // 关闭阶段不信任优雅退出（keep-alive 空闲连接可能拖住 server.close 回调）：
-  // 超时兜底 + 强制退出，保证测试进程确定性结束。
+  // Shutdown does not trust a graceful exit (idle keep-alive connections can hold up the server.close callback):
+  // a timeout fallback plus a forced exit keeps the test process deterministic.
   await Promise.race([
     Promise.all([proxy.close().catch(() => {}), dsh2.close().catch(() => {})]),
     sleep(1500)
   ]);
-  console.log('\n全部通过：' + passed + ' 项断言 ✓');
+  console.log('\nAll passed: ' + passed + ' assertions ✓');
   process.exit(0);
 }
 

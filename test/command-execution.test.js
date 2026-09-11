@@ -1,13 +1,15 @@
 'use strict';
 /**
- * 命令执行安全测试（采纳 PR #12 的注入用例设计 + 平台差异化执行路径回归）。
- * 运行：node test/command-execution.test.js
+ * Command execution security tests (adopts the injection cases designed in PR #12
+ * plus regression coverage for the platform-specific execution paths).
+ * Run: node test/command-execution.test.js
  *
- * 覆盖：
- *  - runCommandOk：真实命令成功 / 未知命令失败 / 元字符注入拒绝
- *  - runCommandOutput：POSIX 走无 shell execFile（PR #12 第二层防御）、
- *    Windows 走净化后的 shell 引号路径；两条路径都拒绝元字符注入
- *  - 输出不被拼接破坏（数组参数直达进程）
+ * Covers:
+ *  - runCommandOk: a real command succeeds / an unknown command fails / metacharacter injection is rejected
+ *  - runCommandOutput: POSIX goes through shell-free execFile (the second layer of
+ *    defense from PR #12), Windows goes through the sanitized shell-quoting path;
+ *    both paths reject metacharacter injection
+ *  - output is not corrupted by concatenation (array arguments go straight to the process)
  */
 const assert = require('assert');
 const path = require('path');
@@ -29,21 +31,21 @@ const { runCommandOk, runCommandOutput } = require(path.join(__dirname, '..', 'e
 
 let passed = 0;
 function ok(cond, name) {
-  if (!cond) { console.error('  ✗ ' + name); throw new Error('断言失败: ' + name); }
+  if (!cond) { console.error('  ✗ ' + name); throw new Error('Assertion failed: ' + name); }
   passed += 1;
   console.log('  ✓ ' + name);
 }
 
 async function main() {
-  console.log('[1] runCommandOk：真实命令 / 未知命令 / 注入拒绝');
+  console.log('[1] runCommandOk: real command / unknown command / injection rejected');
   {
     const okRun = await runCommandOk(process.execPath, ['-v'], 15000);
-    ok(okRun === true, 'node -v 退出码 0 → true');
+    ok(okRun === true, 'node -v exit code 0 → true');
     const badRun = await runCommandOk('definitely-not-a-real-command-xyz', ['--version'], 15000);
-    ok(badRun === false, '未知命令 → false');
+    ok(badRun === false, 'unknown command → false');
   }
 
-  console.log('[2] runCommandOk：元字符注入全部拒绝（PR #12 用例）');
+  console.log('[2] runCommandOk: every metacharacter injection is rejected (PR #12 cases)');
   {
     const injections = [
       'dsh; touch /tmp/pwned',
@@ -62,16 +64,16 @@ async function main() {
       const r = await runCommandOk(bad, ['--version'], 15000);
       if (r === false) rejected += 1;
     }
-    ok(rejected === injections.length, '10 种注入形态全部拒绝（' + rejected + '/' + injections.length + '）');
+    ok(rejected === injections.length, 'all 10 injection forms rejected (' + rejected + '/' + injections.length + ')');
   }
 
-  console.log('[3] runCommandOutput：数组参数直达进程，输出正确');
+  console.log('[3] runCommandOutput: array arguments go straight to the process, output is correct');
   {
     const out = await runCommandOutput(process.execPath, ['-e', 'console.log(6*7)'], 15000);
-    ok(String(out).trim() === '42', '跨平台输出 42（实际 ' + JSON.stringify(String(out).trim()) + '）');
+    ok(String(out).trim() === '42', 'cross-platform output 42 (actual ' + JSON.stringify(String(out).trim()) + ')');
   }
 
-  console.log('[4] runCommandOutput：元字符注入拒绝');
+  console.log('[4] runCommandOutput: metacharacter injection rejected');
   {
     let rejected = 0;
     const bads = ['dsh; pwned', 'dsh & pwned', 'dsh|pwned', 'dsh`pwned`'];
@@ -80,12 +82,12 @@ async function main() {
       try { await runCommandOutput(bad, ['--version']); } catch (e) { failed = true; }
       if (failed) rejected += 1;
     }
-    ok(rejected === bads.length, '元字符命令全部拒绝执行（' + rejected + '/' + bads.length + '）');
+    ok(rejected === bads.length, 'every metacharacter command rejected (' + rejected + '/' + bads.length + ')');
   }
 }
 
 main().then(() => {
-  console.log('\n全部通过：' + passed + ' 项断言 ✓');
+  console.log('\nAll passed: ' + passed + ' assertions ✓');
   process.exit(0);
 }, (e) => {
   console.error(e);
