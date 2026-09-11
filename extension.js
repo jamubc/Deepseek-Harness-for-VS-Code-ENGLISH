@@ -1866,7 +1866,7 @@ function handleWebviewMessage(msg) {
 
 /**
  * Tab-only display URL: in local scenarios, swap `host` between 127.0.0.1 and localhost,
- * creating an origin different from the sidebar so two webviews on the same origin do not block each other's DSH frontend plugin loading.
+ * creating an origin different from the sidebar, so two webviews on the same origin do not become mutually exclusive when loading the DSH frontend plugins.
  * Swap only when `host` is 127.0.0.1 or localhost; other addresses (such as a remotely forwarded domain) are returned as-is.
  * @param {string} displayUrl
  * @returns {string}
@@ -1943,7 +1943,7 @@ async function preparePanelHtml(isTab) {
 }
 
 async function render(view) {
-  // When a tab has taken over DSH, the sidebar does not load it again (avoiding mutual exclusion between two webviews' plugin loading) and shows a placeholder.
+  // When a tab has taken over DSH, the sidebar does not load it again (the two webviews' plugin loading would otherwise be mutually exclusive) and shows a placeholder.
   if (activeTab) {
     view.description = t('在标签页中打开');
     view.webview.html = buildSuspendedHtml();
@@ -2031,8 +2031,8 @@ async function dshRpc(base, method, payload, timeoutMs) {
  * In new `dsh` (0.1.2-rc.x) the endpoint was renamed to `session/page`, and the arguments became
  * `{ address: {kind:'session', sessionId}, throughSeq, maxMessages }`, where
  * `throughSeq` cannot exceed the session's current cursor (when it does, the gateway reports "past cursor N" and returns N along with it).
- * Here the cursor is probed with 0 first, then the trailing page is fetched by cursor and normalized to the old `{ events: [...] }`
- * shape; old `dsh` versions fall back to `session.history` (`{sessionId}`).
+ * Here the cursor is probed with a deliberately out-of-range `throughSeq`, then the trailing page is fetched by cursor and
+ * normalized to the old `{ events: [...] }` shape; old `dsh` versions fall back to `session.history` (`{sessionId}`).
  * @param {string} base
  * @param {string} sid DSH session id
  * @returns {Promise<{events: any[]}>}
@@ -3447,7 +3447,7 @@ function activate(context) {
       { enableScripts: true, retainContextWhenHidden: true }
     );
     activeTab = panel;
-    // The tab takes over DSH: if the sidebar is already open, switch it to a placeholder, avoiding two webviews loading DSH at the same time (mutually exclusive).
+    // The tab takes over DSH: if the sidebar is already open, switch it to a placeholder, since two webviews loading DSH at the same time would be mutually exclusive.
     if (activeView) {
       activeView.description = t('在标签页中打开');
       activeView.webview.html = buildSuspendedHtml();

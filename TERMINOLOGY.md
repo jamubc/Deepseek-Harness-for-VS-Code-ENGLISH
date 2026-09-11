@@ -81,11 +81,13 @@ first so future upstream merges stay consistent.
 
 ## Style rules
 
-1. **English sentence case** for messages and labels: "Send selection to composer",
-   not "Send Selection To Composer".
-2. **Command palette titles** use the `DeepSeek Harness: <Action>` form with Title
-   Case actions, matching the upstream `DeepSeek Harness: <动作>` shape:
-   `DeepSeek Harness: Send Selection to Composer`.
+1. **English sentence case** for messages and labels, and for prose generally:
+   "Send selection to composer", not "Send Selection To Composer".
+2. **Command palette titles** are the exception: they use the
+   `DeepSeek Harness: <Action>` form with Title Case actions, matching the upstream
+   `DeepSeek Harness: <动作>` shape —
+   `DeepSeek Harness: Send Selection to Composer`. These titles live in
+   `l10n/manifest.nls.json`, not in `extension.js`.
 3. Keep VS Code's own terminology: *Command Palette*, *Settings*, *Extensions view*.
 4. Do not translate the contents of `【…】` markers *as markers* — but the English
    rendering of each specific marker is fixed here. See the protocol table below.
@@ -94,6 +96,22 @@ first so future upstream merges stay consistent.
 7. Every user-facing string must be written as `t('<upstream Chinese>')`. Run
    `npm run l10n:check` — it fails the build if any Chinese string bypasses `t()`,
    if a dictionary entry is missing, or if a `{0}` placeholder was dropped.
+8. **`Cookie` vs `cookie`.** Capitalize when naming the HTTP header as a noun
+   ("inject `Host`/`Cookie`", "the `Cookie` is bound to the request `Host`").
+   Lowercase for the generic plural and for local variables ("exchange cookies",
+   "auth probe with no cookie"). Variable names in quoted code stay lowercase.
+9. **`mutually exclusive`** is the fixed rendering of 互斥 — do not vary it with
+   "block each other" or "mutual exclusion", which read as describing a different
+   problem than the one the code works around.
+10. Comments state what the code does and why; do not add information, examples, or
+    opinions that the upstream Chinese did not contain.
+11. Where an upstream comment is factually wrong about its own code, translate it so
+    that it describes what the code actually does — an accurate comment in the wrong
+    language is still wrong — and record the change in the commit message so the
+    divergence from upstream is traceable. Example: the `fetchSessionHistory` docs
+    said the cursor is probed "with 0", while the code probes with
+    `MAX_SAFE_INTEGER`; the translation says "a deliberately out-of-range
+    `throughSeq`".
 
 ## Protocol strings — translate in lockstep
 
