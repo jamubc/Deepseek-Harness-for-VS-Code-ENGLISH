@@ -1,5 +1,5 @@
 {
-  "description": "VS Code integration for DeepSeek Harness (DSH): faithfully renders the DSH Web GUI in a sidebar or editor tab and starts it automatically. It does not interfere with how you organise DSH pages or assemble third-party plugins. Since v0.7.13 it also registers DSH as a Copilot chat model (\"DSH (DeepSeek Harness)\", \"DeepSeek-V4-Pro (DSH)\", \"DeepSeek-V4-Flash (DSH)\", …): it accepts the conversation Copilot has already assembled, filters out prompts unrelated to the conversation, hands the rest to DSH for re-organisation, and streams the result back — making the most of DSH's task orchestration and tool calling.",
+  "description": "English edition of the DeepSeek Harness (DSH) integration for VS Code. Embeds the DSH Web GUI in a sidebar or editor tab, auto-detects and starts dsh for you, and registers DSH as a Copilot chat model so Copilot can hand tasks to DSH’s agent. This edition is translated from the upstream Chinese project and tracks it automatically.",
   "configuration.properties.dshPanel.url.description": "URL of the DeepSeek Harness Web GUI (local, or forwarded over an SSH tunnel).",
   "configuration.properties.dshPanel.host.description": "Host address to bind when the extension starts dsh automatically.",
   "configuration.properties.dshPanel.port.description": "Port to listen on when the extension starts dsh automatically.",

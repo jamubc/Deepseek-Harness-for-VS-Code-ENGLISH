@@ -3,5 +3,10 @@ node_modules/
 *.log
 .DS_Store
 *.vsix
+
+# Local packaging output (`npm run package`) and tooling scratch space.
+dist/
+.build/
+
 # Scratch space for bulk comment translation (see scripts/comment-tools.js).
 .i18n/

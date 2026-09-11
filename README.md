@@ -10,9 +10,35 @@ A zero-dependency VS Code extension that brings **DeepSeek Harness (DSH)** into 
 > **About this repository (English fork).** This is the English edition of the upstream
 > project. All English lives in a small in-repo language pack (`l10n/`, plus `l10n.js` and
 > a handful of `t()` calls), so upstream's own text is kept byte-identical as translation
-> keys and routine upstream updates stay a mechanical merge. Maintaining this fork? See
-> **[docs/UPSTREAM-SYNC.md](docs/UPSTREAM-SYNC.md)**; terminology decisions are recorded in
-> [TERMINOLOGY.md](TERMINOLOGY.md).
+> keys and routine upstream updates stay a mechanical merge — a scheduled workflow does
+> the merge daily and only asks for help when upstream adds new strings.
+>
+> Maintaining this fork? **[docs/UPSTREAM-SYNC.md](docs/UPSTREAM-SYNC.md)** covers the
+> sync, **[docs/PUBLISHING.md](docs/PUBLISHING.md)** covers releasing, and
+> [TERMINOLOGY.md](TERMINOLOGY.md) records the translation decisions.
+
+## ⚡ Install the English build
+
+Download `deepseek-harness-vscode-<version>.vsix` from
+[Releases](https://github.com/jamubc/Deepseek-Harness-for-VS-Code-ENGLISH/releases/latest),
+then either:
+
+```bash
+code --install-extension deepseek-harness-vscode-<version>.vsix
+```
+
+or in VS Code: `Ctrl+Shift+P` → **Extensions: Install from VSIX…** → pick the file.
+
+Then `Ctrl+Shift+P` → **Developer: Reload Window**. The panel, its buttons, the error
+pages, every setting and the Copilot model picker are English from that point on —
+the extension does not depend on your VS Code display language.
+
+To build the `.vsix` yourself instead, no tooling is required beyond Node:
+
+```bash
+npm run package        # writes dist/deepseek-harness-vscode-<version>.vsix
+npm run install:vsix   # installs it with the code CLI
+```
 
 If you like this extension, please star [Deepseek-Harness-for-VS-Code](https://github.com/Vithrive/Deepseek-Harness-for-VS-Code); if you need a Chrome extension, take a look at [Deepseek-Harness-for-Chrome](https://github.com/Vithrive/Deepseek-Harness-for-Chrome).
 

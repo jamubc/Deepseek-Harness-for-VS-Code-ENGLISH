@@ -6,3 +6,14 @@ node_modules/**
 .git/**
 test/**
 proxy/*.log
+
+# Build and tooling scratch space. `dist/**` holds the packaged .vsix itself; shipping
+# it would nest a copy of the extension inside the extension.
+.build/**
+dist/**
+.i18n/**
+.github/**
+
+# Development-only documentation. Kept out of the package to keep the Marketplace
+# listing focused, but still present in the repository.
+CONTRIBUTING.md

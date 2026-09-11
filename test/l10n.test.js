@@ -111,9 +111,13 @@ ok(
 const patchedCmd = rawCopy.contributes.commands.find((c) => c.command === 'dshPanel.refresh');
 ok(patchedCmd.title === 'DeepSeek Harness: Refresh', 'command title is English after the patch');
 
+// The root description is a `%token%` in package.json, so the patch leaves the token
+// in place — VS Code resolves it from package.nls.json, and asserting that resolution
+// is the property that matters. What must never happen is Chinese reaching the listing.
+ok(!/[\u4e00-\u9fff]/.test(rawCopy.description), 'root description has no Chinese after the patch');
 ok(
   rawCopy.description === resolvedManifest.description,
-  'patched root description matches what package.nls.json produces'
+  'patched root description resolves to the same text as package.nls.json'
 );
 
 // --- untouched values stay untouched ---------------------------------------

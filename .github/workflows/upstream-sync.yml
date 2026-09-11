@@ -1,0 +1,181 @@
+name: upstream-sync
+
+# The point of this fork is to track the Chinese upstream without manual work. This runs
+# daily, merges upstream, and reports what — if anything — needs translating.
+#
+# Because upstream's Chinese text is kept as translation *keys*, a merge normally
+# touches no translated line: new or reworded strings simply appear as new keys, and
+# `l10n-check` lists the ones that still need English.
+#
+# Conflicted files are resolved as follows:
+#   · package.json  — take upstream's text; `l10n-sync-manifest.js` re-tokenizes it.
+#   · comments only — take upstream's text. A comment in Chinese is untidy, not broken;
+#                     `translation-status` reports it afterwards.
+#   · any other     — stop. The job fails with the file list, because that is a real
+#                     code change a human has to reconcile.
+#
+# Outcomes:
+#   nothing to translate → a pull request is opened, ready to merge
+#   new strings appear   → the job fails with the exact list and opens an issue
+on:
+  schedule:
+    # 03:17 UTC daily, off the hour so it does not queue behind other scheduled jobs.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Add the upstream remote
+        run: |
+          git remote add upstream https://github.com/Vithrive/Deepseek-Harness-for-VS-Code.git
+          git fetch upstream main
+
+      - name: Is there anything new upstream?
+        id: upstream
+        run: |
+          BEHIND=$(git rev-list --count HEAD..upstream/main)
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          echo "Upstream commits not in this fork: $BEHIND"
+
+      - name: Configure git
+        if: steps.upstream.outputs.behind != '0'
+        run: |
+          git config user.name  "dsh-english-sync[bot]"
+          git config user.email "dsh-english-sync@users.noreply.github.com"
+
+      - name: Merge upstream
+        if: steps.upstream.outputs.behind != '0'
+        id: merge
+        run: |
+          if git merge --no-edit upstream/main; then
+            echo "Merge was clean."
+            exit 0
+          fi
+
+          echo "Conflicted files:"
+          git diff --name-only --diff-filter=U
+
+          # package.json: this fork replaces English-carrying strings with %tokens%, so
+          # it always conflicts. Take upstream's text and re-tokenize below.
+          if git diff --name-only --diff-filter=U | grep -qx 'package.json'; then
+            git checkout --theirs package.json
+            git add package.json
+            echo "Resolved package.json in favour of upstream."
+          fi
+
+          # Comments: keep this fork's structure but upstream's wording. If a conflict
+          # block holds anything other than comments, do not guess — stop.
+          for f in $(git diff --name-only --diff-filter=U); do
+            BODY=$(sed -n '/^<<<<<<< /,/^>>>>>>> /p' "$f" \
+                   | grep -v '^<<<<<<< \|^=======$\|^>>>>>>> ')
+            CODE=$(printf '%s\n' "$BODY" | grep -v '^[[:space:]]*$' \
+                   | grep -v '^[[:space:]]*//' | grep -v '^[[:space:]]*\*' \
+                   | grep -v '^[[:space:]]*/\*' | grep -v '^[[:space:]]*\*/' || true)
+            if [ -z "$CODE" ]; then
+              echo "Comment-only conflict in $f — taking upstream's text."
+              git checkout --theirs "$f"
+              git add "$f"
+            fi
+          done
+
+          REMAINING=$(git diff --name-only --diff-filter=U || true)
+          if [ -n "$REMAINING" ]; then
+            {
+              echo "### Manual merge needed"
+              echo
+              echo "Upstream changed code in files this fork has also modified. Resolve locally:"
+              echo
+              echo '```'
+              echo "git fetch upstream && git merge upstream/main"
+              echo '```'
+              echo
+              echo "Conflicted files:"
+              printf -- '- `%s`\n' $REMAINING
+              echo
+              echo "Then run \`npm run l10n:manifest\` and \`npm run l10n:check\`, and see docs/UPSTREAM-SYNC.md."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Conflicts outside comments need a human: $(echo $REMAINING | tr '\n' ' ')"
+            exit 1
+          fi
+
+          git commit --no-edit
+          echo "Merge committed after resolving conflicts."
+
+      - name: Re-tokenize the manifest and check coverage
+        if: steps.upstream.outputs.behind != '0' && steps.merge.outcome == 'success'
+        id: l10n
+        continue-on-error: true
+        run: |
+          node scripts/l10n-sync-manifest.js --write
+          node scripts/l10n-check.js
+
+      - name: Run the tests
+        if: steps.upstream.outputs.behind != '0' && steps.merge.outcome == 'success' && steps.l10n.outcome == 'success'
+        run: npm test
+
+      - name: Open a pull request when everything is translated
+        if: steps.upstream.outputs.behind != '0' && steps.merge.outcome == 'success' && steps.l10n.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="upstream-sync/$(date -u +%Y-%m-%d)"
+          git checkout -b "$BRANCH"
+          git push -u origin "$BRANCH"
+          COUNT=$(git rev-list --count "$(git merge-base HEAD origin/main)"..upstream/main 2>/dev/null || echo "several")
+          gh pr create \
+            --title "chore: merge upstream ($COUNT commits)" \
+            --body "Automated merge of [Vithrive/Deepseek-Harness-for-VS-Code](https://github.com/Vithrive/Deepseek-Harness-for-VS-Code).
+
+          \`npm run l10n:check\` passes, so **no translation work is needed** — upstream's new
+          strings either kept their existing English or were not user-facing.
+
+          Review the upstream changes and merge." \
+            --base main --head "$BRANCH"
+
+      - name: Report the strings that still need translating
+        if: steps.upstream.outputs.behind != '0' && steps.merge.outcome == 'success' && steps.l10n.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "## Translation needed"
+            echo
+            echo "The daily upstream merge found Chinese strings with no English translation."
+            echo "Nothing is broken — untranslated strings fall back to upstream's Chinese at"
+            echo "runtime — but the fork is no longer fully English."
+            echo
+            echo "Run the gate locally to see the exact list:"
+            echo
+            echo '```'
+            echo "git fetch upstream && git merge upstream/main"
+            echo "npm run l10n:manifest   # tokenize new settings and commands"
+            echo "npm run l10n:check      # lists every string that needs translating"
+            echo '```'
+            echo
+            echo "Then add the English text to \`l10n/bundle.l10n.json\` (runtime strings) or"
+            echo "\`l10n/manifest.nls.json\` (settings and command titles). See docs/UPSTREAM-SYNC.md."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          gh issue create \
+            --title "Translation needed: upstream added new strings ($(date -u +%Y-%m-%d))" \
+            --body "$(sed -n '/^## Translation needed/,$p' "$GITHUB_STEP_SUMMARY")" \
+            --label translation 2>/dev/null \
+            || gh issue create \
+                 --title "Translation needed: upstream added new strings ($(date -u +%Y-%m-%d))" \
+                 --body "$(sed -n '/^## Translation needed/,$p' "$GITHUB_STEP_SUMMARY")" \
+            || echo "could not open an issue (issues may be disabled)"

@@ -1,0 +1,86 @@
+name: release
+
+# Tag a commit and this builds the .vsix, attaches it to a GitHub release, and — only
+# if a Marketplace token is configured — publishes to the VS Code Marketplace.
+#
+#   git tag v0.8.43 && git push origin v0.8.43
+#
+# Keeping the tag in step with upstream's version means the fork's releases can be read
+# side by side with upstream's, and the daily sync workflow has an obvious thing to do
+# when upstream cuts a release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Also publish to the VS Code Marketplace (needs VSCE_PAT)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Translation gate
+        run: npm run l10n:check
+
+      - name: Tests
+        run: npm test
+
+      # Publishes under whatever `publisher` package.json declares, so a mistake here
+      # would try to push a build to someone else's Marketplace account. Fail early
+      # with a clear message instead.
+      - name: Check the publisher is the fork owner, not upstream
+        run: |
+          PUBLISHER=$(node -p "require('./package.json').publisher")
+          if [ "$PUBLISHER" = "vithrive" ]; then
+            echo "::error::package.json still declares upstream's publisher 'vithrive'."
+            echo "Create a publisher at https://marketplace.visualstudio.com/manage and set"
+            echo "'publisher' in package.json to its id. See docs/PUBLISHING.md."
+            exit 1
+          fi
+          echo "publisher: $PUBLISHER"
+
+      - name: Build the .vsix
+        run: npx --yes @vscode/vsce package --out dist/
+
+      - name: Upload the .vsix as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: dist/*.vsix
+          if-no-files-found: error
+
+      - name: Attach the .vsix to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.vsix \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes "English edition of DeepSeek Harness for VS Code.
+
+          Install with:
+          \`\`\`
+          code --install-extension $(basename dist/*.vsix)
+          \`\`\`
+
+          Based on upstream $(node -p "require('./package.json').version"); see docs/UPSTREAM-SYNC.md." \
+          || gh release upload "$GITHUB_REF_NAME" dist/*.vsix --clobber
+
+      - name: Publish to the VS Code Marketplace
+        if: startsWith(github.ref, 'refs/tags/v') && secrets.VSCE_PAT != ''
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx --yes @vscode/vsce publish --packagePath dist/*.vsix

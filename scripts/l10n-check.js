@@ -29,6 +29,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const PATH = path;
 
 const ROOT = path.join(__dirname, '..');
 const EXTENSION = path.join(ROOT, 'extension.js');
@@ -276,7 +277,54 @@ function main() {
         warnings.push('package.nls.json defines ' + key + ', which package.json no longer references');
       }
     }
+
+    // package.nls.json is generated from l10n/manifest.nls.json. Editing it by hand
+    // silently diverges from the table — and would be overwritten by the next sync —
+    // so compare the two rather than trusting them to agree.
+    for (const [key, expected] of Object.entries(manifestNls)) {
+      if (typeof expected !== 'string') continue;
+      if (key in nls && nls[key] !== expected) {
+        errors.push('package.nls.json disagrees with l10n/manifest.nls.json for ' + key +
+          '\n      table:     ' + JSON.stringify(expected.slice(0, 90)) +
+          '\n      generated: ' + JSON.stringify(String(nls[key]).slice(0, 90)) +
+          '\n      Fix the table, then run: node scripts/l10n-sync-manifest.js --write');
+      }
+    }
     if (!tokens.length) errors.push('package.json contains no %token% strings; manifest sync has not run');
+  }
+
+  // ---- 7. Manifest metadata must be publishable ---------------------------
+  //
+  // These are the mistakes that only surface at `vsce publish` time, usually after a
+  // tag has been pushed. Checking them here keeps the failure local.
+  const PUBLISHER_RE = /^[a-z0-9][a-z0-9-]*$/;
+  if (!pkg.publisher || !PUBLISHER_RE.test(pkg.publisher)) {
+    errors.push('package.json publisher must be a Marketplace publisher id (lowercase letters, digits and hyphens): ' + JSON.stringify(pkg.publisher));
+  } else if (pkg.publisher === 'vithrive' && !/Vithrive/.test(String(pkg.repository && pkg.repository.url))) {
+    errors.push('package.json declares upstream\'s publisher "vithrive" but the repository is not upstream\'s — publishing would target someone else\'s account');
+  }
+  if (!pkg.name || !PUBLISHER_RE.test(pkg.name)) {
+    errors.push('package.json name must be lowercase letters, digits and hyphens: ' + JSON.stringify(pkg.name));
+  }
+  if (!pkg.displayName || CJK.test(pkg.displayName)) {
+    errors.push('package.json displayName must be present and free of Chinese: ' + JSON.stringify(pkg.displayName));
+  }
+  if (!pkg.engines || !pkg.engines.vscode) {
+    errors.push('package.json must declare engines.vscode');
+  }
+  if (!pkg.license) {
+    warnings.push('package.json declares no license');
+  }
+  if (!String(pkg.description || '').startsWith('%') && CJK.test(String(pkg.description || ''))) {
+    errors.push('package.json description still contains Chinese');
+  }
+  if (!fs.existsSync(PATH.join(ROOT, pkg.icon || 'media/icon.png'))) {
+    errors.push('package.json icon does not exist: ' + JSON.stringify(pkg.icon));
+  }
+  // A .vsix whose README is not English would be a strange listing.
+  const readmeChars = (fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8').match(CJK) || []).length;
+  if (readmeChars > 0) {
+    errors.push('README.md contains ' + readmeChars + ' Chinese characters; the Marketplace listing is generated from it');
   }
 
   // ---- report -------------------------------------------------------------

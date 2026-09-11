@@ -2,21 +2,43 @@
 
 This fork (`jamubc/Deepseek-Harness-for-VS-Code-ENGLISH`) adds English to
 `Vithrive/Deepseek-Harness-for-VS-Code`. All English lives in `l10n/` plus a handful
-of `t()` call sites, so staying current with upstream is a mechanical four-step
-process rather than a re-translation.
+of `t()` call sites, so staying current with upstream is a mechanical process rather
+than a re-translation.
 
-## One-time setup
+## The automation does this for you
+
+[`.github/workflows/upstream-sync.yml`](../.github/workflows/upstream-sync.yml) runs
+**daily at 03:17 UTC** (and on demand from the Actions tab). You do not have to do
+anything routine:
+
+| Situation | What the workflow does |
+| --- | --- |
+| Upstream has no new commits | Does nothing. |
+| Upstream changed only things that are already English | Merges, re-tokenizes the manifest, runs the tests, and **opens a pull request**. Review it and press Merge. |
+| Upstream added or reworded user-facing Chinese | Merges, then **fails with the exact list** and opens an issue titled *"Translation needed…"*. Add the English lines shown below; the next run opens the PR. |
+| Upstream changed code this fork also changed | **Stops** and reports the conflicting files in the job summary. This is rare; resolve it locally with the steps below. |
+
+Conflicts in `package.json` are resolved automatically (upstream's text is taken, then
+re-tokenized), as are conflicts that touch **only comments** — a comment left in
+Chinese is untidy, not broken.
+
+So the only recurring work is translating new strings, which is adding one line per
+string to a JSON file. Everything else is a button press.
+
+## Doing a translation pass by hand
+
+### One-time setup
 
 ```bash
 git remote add upstream https://github.com/Vithrive/Deepseek-Harness-for-VS-Code.git
 git fetch upstream
 ```
 
-## Routine update
+### Routine update
 
 ```bash
 git fetch upstream
-git merge upstream/main          # expect conflicts in package.json only
+git merge upstream/main          # conflicts, if any, are in package.json
 npm run l10n:manifest            # tokenize any new/changed manifest strings
 npm run l10n:check               # fails loudly, listing every untranslated string
 npm test
@@ -100,9 +122,11 @@ later ship real translations for other languages, add
 
 | Command | Purpose |
 | --- | --- |
-| `npm run l10n:check` | fails if any user-facing Chinese is untranslated |
+| `npm run l10n:check` | fails if any user-facing Chinese is untranslated, if `package.nls.json` disagrees with its source table, or if the manifest metadata is not publishable |
 | `npm run l10n:manifest` | re-tokenizes `package.json`, regenerates `package.nls.json` |
+| `npm run l10n:status` | reports what Chinese remains, and why it is allowed to be there |
 | `npm run l10n:verify-comments` | proves a comment-only pass changed no code |
+| `npm run package` | builds the `.vsix` with no dependencies beyond Node |
 | `npm test` | runs `test/*.test.js`, including `test/l10n.test.js` |
 
 `scripts/verify-comment-only.js` compares the current file against a git revision
@@ -110,9 +134,17 @@ after stripping comments *and* blanking string bodies. If the residue is identic
 no identifier, literal or operator was touched. Use it after any bulk comment edit:
 
 ```bash
-git stash && git commit -am "wip" # or just compare against a known-good ref
+git add -A && git commit -m wip    # so HEAD is the "before" state
+# ... edit comments ...
 npm run l10n:verify-comments
 ```
+
+### Never hand-edit generated files
+
+`package.nls.json` is **generated** from `l10n/manifest.nls.json` by
+`npm run l10n:manifest`. Editing it by hand appears to work and is then silently
+overwritten. `npm run l10n:check` now fails when the two disagree; fix the table and
+regenerate.
 
 ## Review checklist for a sync PR
 
