@@ -16,7 +16,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const net = require('net');
 const assert = require('assert');
 const Module = require('module');
@@ -62,6 +62,12 @@ function getJson(port, reqPath, method, body) {
  * @returns {string|null} a human-readable reason to skip, or null when dsh can run
  */
 function skipReason() {
+  // Is dsh on PATH? A machine without it cannot run this test at all.
+  const lookup = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['dsh'], { encoding: 'utf8' });
+  if (lookup.status !== 0) {
+    return 'dsh is not on PATH';
+  }
+
   const home = os.homedir();
   const profile = path.join(home, '.dsh');
   const probe = path.join(profile, '.e2e-write-probe');
@@ -78,8 +84,11 @@ function skipReason() {
 async function main() {
   const skip = skipReason();
   if (skip) {
+    // Not a failure: this file verifies the extension against a real dsh, which CI
+    // and sandboxed machines generally cannot provide. Exit 0 so that a green suite
+    // keeps meaning "nothing is broken".
     console.log('SKIP: ' + skip);
-    console.log('      This test needs a real dsh with a writable ~/.dsh profile.');
+    console.log('      Needs a real dsh installation with a writable ~/.dsh profile; skipping.');
     return;
   }
 

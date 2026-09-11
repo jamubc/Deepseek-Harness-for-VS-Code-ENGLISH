@@ -1,0 +1,35 @@
+name: checks
+
+# Guards the two things this fork can break: the English translation, and the
+# extension's behaviour. Run `npm run l10n:check` locally first for the same result.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  l10n-and-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The extension has no runtime dependencies, so there is nothing to install.
+      # `npm ci` is deliberately skipped: package.json declares no dependencies and
+      # no lockfile is committed.
+
+      - name: Every user-facing string resolves to English
+        run: npm run l10n:check
+
+      - name: Manifest translations are in sync
+        run: node scripts/l10n-sync-manifest.js --check
+
+      - name: Translation status report
+        run: node scripts/translation-status.js
+
+      - name: Tests
+        run: npm test
