@@ -40,13 +40,39 @@ const QUOTABLE_PROTOCOL = /用户：|助手：|【[^】]*】|⏳ 已提交给 De
 
 /**
  * Split a source line into its comment marker and its comment text.
+ *
+ * Handles both a whole-line comment (`// …`, `* …`, `/* … `) and a *trailing*
+ * comment after code (`return x; // …`). The marker is everything up to and
+ * including the comment delimiter, so callers can rebuild the line exactly by
+ * concatenating `marker + text`.
+ *
  * @param {string} line
  * @returns {{marker: string, text: string}|null}
  */
 function splitComment(line) {
-  const m = /^(\s*\/\/\s?|\s*\*\s?|\s*\/\*\s?)(.*)$/.exec(line);
-  if (!m) return null;
-  return { marker: m[1], text: m[2] };
+  const whole = /^(\s*\/\/\s?|\s*\*\s?|\s*\/\*\s?)(.*)$/.exec(line);
+  if (whole) return { marker: whole[1], text: whole[2] };
+  // Trailing comment: find a // that is not inside a quoted string.
+  let quote = null;
+  for (let i = 0; i < line.length - 1; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') { quote = c; continue; }
+    if (c === '/' && line[i + 1] === '/') {
+      const head = line.slice(0, i);
+      const rest = line.slice(i);
+      const m = /^(\/\/\s?)(.*)$/.exec(rest);
+      if (!m) return null;
+      // Keep the code plus the alignment whitespace as the marker.
+      const pad = /\s*$/.exec(head)[0];
+      return { marker: head.slice(0, head.length - pad.length) + pad + m[1], text: m[2] };
+    }
+  }
+  return null;
 }
 
 const mode = process.argv[2];

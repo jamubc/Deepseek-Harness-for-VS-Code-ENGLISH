@@ -475,7 +475,7 @@ function normAuthority(hostHeader) {
 /** Extract the token parameter value from an authentication link or a bare token string. */
 function extractTokenParam(input) {
   const s = String(input || '').trim();
-  if (/^[A-Za-z0-9_.\-]{16,}$/.test(s)) return s; // 本身就是令牌
+  if (/^[A-Za-z0-9_.\-]{16,}$/.test(s)) return s; // it is already a token
   const m = s.match(/[?&]token=([A-Za-z0-9_.\-]+)/);
   return m ? m[1] : null;
 }
@@ -548,7 +548,7 @@ async function ensureAuthProxy() {
           const cap = gContext.globalState.get('dsh.authCapable');
           if (typeof cap === 'boolean') dshAuthCapable = cap;
         }
-      } catch { /* 忽略缓存读取失败 */ }
+      } catch { /* ignore a failed cache read */ }
     }
     if (!dshLaunchToken && gContext) {
       try {
@@ -556,13 +556,13 @@ async function ensureAuthProxy() {
         if (cache && cache.target === getUrl() && cache.token) {
           dshLaunchToken = cache.token;
         }
-      } catch { /* 忽略缓存读取失败 */ }
+      } catch { /* ignore a failed cache read */ }
     }
     if (dshLaunchToken) proxy.onToken(dshLaunchToken);
     return proxy;
   })();
   const result = await authProxyPromise;
-  if (result === null) authProxyPromise = null; // 失败允许下次重试
+  if (result === null) authProxyPromise = null; // allow a retry next time after a failure
   return result;
 }
 
@@ -581,7 +581,7 @@ function createAuthProxy(targetUrl) {
     const target = new URL(targetUrl);
     const targetPort = Number(target.port) || (target.protocol === 'https:' ? 443 : 80);
     const cookies = new Map(); // authority -> 'name=value'
-    const exchanges = new Map(); // authority -> Promise（并发去重）
+    const exchanges = new Map(); // authority -> Promise (de-duplicated per authority)
     let token = null;
     let port = 0;
 
@@ -619,7 +619,7 @@ function createAuthProxy(targetUrl) {
       return p;
     }
 
-    /** 令牌到位后为两个本机来源静默预换 Cookie。 */
+    /** Once the token is in place, silently pre-exchange cookies for both local origins. */
     async function preAuth() {
       if (!token) return;
       await Promise.all([
@@ -628,7 +628,7 @@ function createAuthProxy(targetUrl) {
       ]).catch(() => {});
     }
 
-    /** 无 Cookie 时的鉴权探测：直接访问上游首页的状态码（401 = 需认证）。 */
+    /** Auth probe with no cookie: the status code from fetching the upstream index page directly (401 = authentication required). */
     function probeIndexStatus(timeoutMs = 4000) {
       return new Promise((done) => {
         try {
@@ -651,7 +651,7 @@ function createAuthProxy(targetUrl) {
       });
     }
 
-    /** 端到端自检：请求代理自身首页（走完整转发链），200 即「webview 可用」。 */
+    /** End-to-end self-check: request the proxy's own index page (full forwarding chain); 200 means "webview usable". */
     function probeSelf(timeoutMs = 2500) {
       return new Promise((done) => {
         try {
@@ -672,7 +672,7 @@ function createAuthProxy(targetUrl) {
       });
     }
 
-    /** 清理 hop-by-hop 头，注入 Host/Cookie 后转发。 */
+    /** Strip hop-by-hop headers, inject Host/Cookie, then forward. */
     function buildForwardHeaders(req, authority, cookieValue) {
       const headers = { ...req.headers };
       delete headers.host;
@@ -685,7 +685,7 @@ function createAuthProxy(targetUrl) {
       return headers;
     }
 
-    /** 普通 HTTP 转发（含 401 自动重换重试一次）。 */
+    /** Plain HTTP forwarding (with one automatic re-exchange and retry on 401). */
     async function forward(req, res) {
       const authority = normAuthority(req.headers.host) || `127.0.0.1:${port}`;
       let cookie = cookies.get(authority) || null;
@@ -741,7 +741,7 @@ function createAuthProxy(targetUrl) {
       }
     }
 
-    /** WebSocket 升级透传（注入 Host/Cookie，原始字节双向转发）。 */
+    /** WebSocket upgrade pass-through (inject Host/Cookie, forward raw bytes in both directions). */
     function onUpgrade(req, socket, head) {
       const authority = normAuthority(req.headers.host) || `127.0.0.1:${port}`;
       const cookie = cookies.get(authority) || null;
@@ -779,7 +779,7 @@ function createAuthProxy(targetUrl) {
         }
       });
       upstream.on('response', (ures) => {
-        // 上游拒绝升级（如 401/404）：把状态原样回给客户端。
+        // Upstream refused the upgrade (e.g. 401/404): relay the status back to the client unchanged.
         const chunks = [];
         ures.on('data', (c) => chunks.push(c));
         ures.on('end', () => {
@@ -826,7 +826,7 @@ function createAuthProxy(targetUrl) {
           tokenKnown: !!token,
           authedAuthorities: [...cookies.keys()]
         }),
-        /** 供「在浏览器中打开」：携带当前令牌的认证链接（真实浏览器可自行换 Cookie）。 */
+        /** For "Open in Browser": an authenticated link carrying the current token (a real browser can exchange the cookie itself). */
         authenticatedUrl: () => {
           if (!token) return targetUrl;
           try {
@@ -844,7 +844,7 @@ function createAuthProxy(targetUrl) {
         exchangeFor,
         probeIndexStatus,
         probeSelf,
-        /** 等待基础来源（127.0.0.1）的 Cookie 就绪或超时；无令牌时立即返回。 */
+        /** Wait for the base origin (127.0.0.1) cookie to become ready or to time out; return immediately when there is no token. */
         waitAuthed: (ms = 8000) => new Promise((done) => {
           if (!token || cookies.has(`127.0.0.1:${port}`)) { done(); return; }
           const t0 = Date.now();
@@ -867,11 +867,11 @@ function createAuthProxy(targetUrl) {
 }
 
 /**
- * 为面板解析最终展示地址：
- * - 代理可用且 Cookie 就绪 → 代理地址（webview 由此获得无感认证）；
- * - 代理可用但未认证且上游 401 → { unauthorized: true }（引导接管）；
- * - 其余（Remote / 非回环 / 老版 dsh 无认证）→ 原直连展示地址。
- * @param {boolean} isTab 是否标签页模式
+ * Resolve the final display URL for the panel:
+ * - Proxy available and cookie ready → proxy URL (the webview gets seamless authentication through it);
+ * - Proxy available but unauthenticated and upstream 401 → { unauthorized: true } (guidance takes over);
+ * - Otherwise (Remote / non-loopback / old dsh without auth) → the original direct display URL.
+ * @param {boolean} isTab whether tab mode is enabled
  * @returns {Promise<{displayUrl: string} | {unauthorized: true}>}
  */
 async function resolvePanelTarget(isTab) {
@@ -881,8 +881,8 @@ async function resolvePanelTarget(isTab) {
   await proxy.waitAuthed(8000);
   if (proxy.hasCookieForBase()) {
     displayUrl = isTab ? proxy.urlForTab() : proxy.baseUrl();
-    // 端到端就绪确认：代理链路（注入 Cookie → 上游 → 回包）拿到 200 才交给
-    // iframe，避免 dsh 半就绪（端口已监听但插件/连接未加载完）导致首次加载失败。
+    // End-to-end readiness check: hand off to the
+    // iframe only after the proxy chain (inject Cookie → upstream → response) returns 200, avoiding a failed first load while dsh is half-ready (port listening but plugins/connection not loaded yet).
     const deadline = Date.now() + 6000;
     let probeStatus = 0;
     while (Date.now() < deadline) {
@@ -894,12 +894,12 @@ async function resolvePanelTarget(isTab) {
   }
   const status = await proxy.probeIndexStatus();
   if (status === 401) return { unauthorized: true };
-  return { displayUrl }; // 老版本 dsh（无认证），照旧直连
+  return { displayUrl }; // older dsh (no authentication): connect directly as before
 }
 
 /**
- * 认证引导（免打扰策略：仅在确认 401 且无法静默认证时触发，且带 3 分钟冷却）：
- * 提供两个动作——由扩展受管重启 dsh（自动认证，推荐），或粘贴 dsh web 打印的认证链接。
+ * Auth guidance (do-not-disturb policy: triggered only on a confirmed 401 that cannot be authenticated silently, with a 3-minute cooldown):
+ * Offers two actions — restart dsh under extension management (automatic authentication, recommended), or paste the authentication link printed by dsh web.
  * @param {boolean} isTab
  */
 function maybeGuideAuth(isTab) {
@@ -943,12 +943,12 @@ function maybeGuideAuth(isTab) {
   });
 }
 
-/** 扩展自身访问 dsh /api 的基址：代理就绪时走代理（自动带认证）。 */
+/** Base URL the extension uses to reach dsh /api: via the proxy when ready (auth added automatically). */
 async function apiBase() {
   if (isLocalLoopbackTarget()) {
     const proxy = await ensureAuthProxy();
     if (proxy) {
-      // Cookie 可能尚未换发完成（dsh 刚启动）：短暂等待，避免打到裸地址吃 401。
+      // The cookie may not have been exchanged yet (dsh just started): wait briefly so the request does not hit the bare address and get a 401.
       await proxy.waitAuthed(5000);
       if (proxy.hasCookieForBase()) {
         return proxy.baseUrl();
@@ -959,19 +959,19 @@ async function apiBase() {
 }
 
 /**
- * 启动 dsh web 进程。Windows 通过 shell 执行以命中 dsh.cmd shim。
- * 兼容新旧版本：--no-open 先经 `dsh web --help` 探测，老版本不支持时不传，
- * 避免未知参数导致启动失败。
+ * Start the dsh web process. On Windows it runs through the shell to hit the dsh.cmd shim.
+ * Compatible with old and new versions: --no-open is probed first with `dsh web --help` and omitted when an older version does not support it,
+ * so an unknown argument cannot make startup fail.
  * @returns {Promise<import('child_process').ChildProcess>}
  */
 async function startDsh() {
-  // 使用 ensureDshInstalled 解析出的启动方式（全局 dsh 或 npx）。
-  // 兜底回退到配置的命令，避免异常时序下拿到空值。
+  // Use the launch method resolved by ensureDshInstalled (global dsh or npx).
+  // Fall back to the configured command so abnormal timing cannot yield an empty value.
   const inv = dshInvocation || { cmd: getDshCommand(), prefix: [] };
-  // host/port 均已净化（getHost 白名单 / getPort 整数），cmd 经 sanitizeCommand
-  // 拒绝 shell 元字符——Semgrep detect-child-process 指示的 shell:true 在此数据流
-  // 下无注入面（win32 需 shell 命中 dsh.cmd shim，POSIX 不经 shell）。
-  // 纵深校验（PR #12 思路）：cmd 来自 getDshCommand()（已净化），此处再拒一次。
+  // host/port are both sanitized (getHost allowlist / getPort integer), and cmd goes through sanitizeCommand,
+  // which rejects shell metacharacters — the shell:true flagged by Semgrep detect-child-process has no injection
+  // surface in this data flow (win32 needs the shell to hit the dsh.cmd shim, POSIX does not go through a shell).
+  // Defense in depth (PR #12 approach): cmd comes from getDshCommand() (already sanitized) and is rejected once more here.
   if (typeof inv.cmd !== 'string' || inv.cmd === '' || SHELL_META_PATTERN.test(inv.cmd)) {
     throw new Error(t('dsh 命令包含 shell 元字符或为空，已拒绝启动'));
   }
@@ -981,17 +981,17 @@ async function startDsh() {
     '--host', String(getHost()),
     '--port', String(getPort())
   ];
-  // dsh 0.1.2-rc 起的 web 浏览器认证由扩展自动完成（受管认证代理），
-  // 默认不再弹系统浏览器；需要保留旧行为时打开 dshPanel.openSystemBrowser。
-  // 老版本 dsh 不识别 --no-open：探测支持才传，探测失败按支持处理（仍有回退）。
+  // Since dsh 0.1.2-rc, web browser authentication is completed automatically by the extension (managed auth proxy),
+  // so the system browser no longer pops up by default; enable dshPanel.openSystemBrowser to keep the old behavior.
+  // Older dsh does not recognize --no-open: pass it only when the probe says it is supported, and treat a failed probe as supported (there is still a fallback).
   if (!cfg().get('dshPanel.openSystemBrowser', false) && (dshNoOpenBroken !== true)) {
     if (await dshWebSupportsNoOpen(inv)) {
       args.push('--no-open');
     }
   }
-  // Windows 经 cmd.exe 启动：含空格的 cmd 需区分两种形态——
-  //   a) 单个存在的可执行文件（带空格目录）→ 整体加引号；
-  //   b) 多 token 命令行前缀（如 "node C:\x\dsh.js"）→ 原样透传由 shell 分词（≤0.8.33 行为）。
+  // Windows launches through cmd.exe: a cmd containing spaces has two forms to distinguish —
+  //   a) a single existing executable file (directory with spaces) → quote the whole thing;
+  //   b) a multi-token command-line prefix (such as "node C:\x\dsh.js") → pass through as is and let the shell tokenize it (≤0.8.33 behavior).
   const cmdText = (process.platform === 'win32' && /\s/.test(inv.cmd) && fs.existsSync(inv.cmd)) ? '"' + inv.cmd + '"' : inv.cmd;
   const child = spawn(cmdText, args, {
     cwd: getWorkspaceDir(),
@@ -1018,8 +1018,8 @@ async function startDsh() {
 }
 
 /**
- * 探测当前 dsh 的 web 子命令是否支持 --no-open（读 `dsh web --help` 输出）。
- * 结果按进程缓存；探测异常时按支持处理（保留 dshNoOpenBroken 回退兜底）。
+ * Probe whether the current dsh's web subcommand supports --no-open (read the `dsh web --help` output).
+ * The result is cached per process; treat a failed probe as supported (the dshNoOpenBroken fallback is kept).
  * @param {{cmd: string, prefix: string[]}} inv
  * @returns {Promise<boolean>}
  */
@@ -1032,18 +1032,18 @@ async function dshWebSupportsNoOpen(inv) {
     dshNoOpenSupported = true;
   }
   if (dshNoOpenSupported === false) {
-    dshNoOpenBroken = true; // 老版本：不再尝试该参数（等待逻辑也直接跳过认证链接等待）
+    dshNoOpenBroken = true; // older dsh: stop trying this flag (the wait logic also skips waiting for an auth link)
   }
   return dshNoOpenSupported;
 }
 
 /**
- * 逐行读取 dsh web 的 stdout：
- * - 捕获「完全启动」信号：任何 `dsh web: <url>` 打印行（新版带 token=，
- *   老版为纯 URL，都代表 dsh 自身就绪）；
- * - 带令牌的行交给 learnDshToken（认证代理据此换发 Cookie）；
- * - 不带令牌的行说明当前 dsh 无 web 认证（老版本），记 dshAuthCapable=false。
- * stderr 仅记录日志便于排障。
+ * Read dsh web's stdout line by line:
+ * - Capture the "fully started" signal: any `dsh web: <url>` printed line (new versions include token=,
+ *   older versions are a plain URL; both mean dsh itself is ready);
+ * - A line with a token goes to learnDshToken (the auth proxy exchanges the cookie from it);
+ * - A line without a token means this dsh has no web authentication (older version); record dshAuthCapable=false.
+ * stderr is only logged, to help troubleshooting.
  * @param {import('child_process').ChildProcess} child
  */
 function attachDshOutputReader(child) {
@@ -1060,11 +1060,11 @@ function attachDshOutputReader(child) {
         if (extractTokenParam(m[1])) {
           learnDshToken(m[1]);
         } else if (dshAuthCapable !== true) {
-          setDshAuthCapable(false); // 老版 dsh：URL 无 token 参数
+          setDshAuthCapable(false); // older dsh: the URL carries no token parameter
         }
       }
       if (line.indexOf('opening the default browser') >= 0) {
-        // --no-open 未生效（老版本不支持该参数等）：提示一次便于定位。
+        // --no-open had no effect (older version without the argument, etc.): warn once to help pinpoint it.
         console.warn(t('[DeepSeek Harness] dsh 自行打开了系统浏览器（--no-open 未生效）。新版 dsh 由扩展自动抑制弹页；若仍弹页请检查 dshPanel.openSystemBrowser 与 dsh 配置。'));
       }
     }
@@ -1080,8 +1080,8 @@ function attachDshOutputReader(child) {
 }
 
 /**
- * 杀掉进程树。Windows 上 spawn 走 shell 时，child.kill() 只能杀 cmd.exe，
- * 需要 taskkill /t 才能连同真正的 node 进程一起结束。
+ * Kill the process tree. On Windows, when spawn goes through the shell, child.kill() only kills cmd.exe,
+ * so taskkill /t is needed to end the real node process along with it.
  */
 function killTree(child) {
   if (!child || child.pid == null) return;
@@ -1100,8 +1100,8 @@ function killTree(child) {
 }
 
 /**
- * 确保 DSH 正在运行：检测 ->（未运行时）启动 -> 轮询等待就绪。
- * 返回是否成功就绪。
+ * Make sure DSH is running: detect -> (when not running) start -> poll until ready.
+ * Returns whether it became ready successfully.
  * @returns {Promise<boolean>}
  */
 async function ensureRunning() {
@@ -1109,7 +1109,7 @@ async function ensureRunning() {
   const autoStart = cfg().get('dshPanel.autoStart', true);
 
   if (await checkUrl(url)) {
-    return true; // 已有服务，直接复用
+    return true; // a service is already running; reuse it as is
   }
 
   if (!autoStart) {
@@ -1120,16 +1120,16 @@ async function ensureRunning() {
 }
 
 /**
- * 启动 dsh 并等待就绪（最多约 30 秒）。
- * 老版本 dsh 可能不识别 --no-open（启动即退出）：自动去掉该参数重试一次。
+ * Start dsh and wait until ready (about 30 seconds at most).
+ * Older dsh may not recognize --no-open (it exits right after starting): automatically drop the argument and retry once.
  * @param {string} url
  * @returns {Promise<boolean>}
  */
 async function startDshAndWaitReady(url) {
-  // 记录启动前的「启动广播」快照：dsh 完全就绪（插件/连接加载完）才会打印
-  // `dsh web: <url>` 行——新版带 token=，老版为纯 URL。端口可达 ≠ 就绪，
-  // 过早渲染 iframe 会让前端在半就绪服务上启动失败（表现为重启后首次
-  // 加载不出来、刷新一次才好）。
+  // Record the "boot announcement" snapshot taken before the start: dsh prints the
+  // `dsh web: <url>` line only when fully ready (plugins/connection loaded) — new versions with token=, older ones a plain URL. A reachable port ≠ ready,
+  // and rendering the iframe too early makes the frontend fail to start on a half-ready service (it shows up as the first
+  // load after a restart failing, fixed by one refresh).
   const announceBefore = dshBootAnnouncedAt;
   if (!await startDshAndAwaitPort(url)) {
     return false;
@@ -1137,7 +1137,7 @@ async function startDshAndWaitReady(url) {
   return await waitDshFullBoot(announceBefore);
 }
 
-/** 端口可达即返回（401 也算）；含「探测漏判 --no-open」时的一次去参重试。 */
+/** Return as soon as the port is reachable (401 counts too); includes one retry without the argument when the probe missed --no-open. */
 async function startDshAndAwaitPort(url) {
   startDsh().catch(() => {});
   for (let i = 0; i < 60; i++) {
@@ -1147,7 +1147,7 @@ async function startDshAndAwaitPort(url) {
     }
   }
   if (!dshNoOpenBroken && !cfg().get('dshPanel.openSystemBrowser', false)) {
-    // 兜底：探测误判（如 --help 输出异常）导致带参启动失败，去掉参数重试一次。
+    // Fallback: a wrong probe (e.g. unusual --help output) made the start with the argument fail; drop it and retry once.
     startDsh().catch(() => {});
     for (let i = 0; i < 60; i++) {
       await sleep(500);
@@ -1160,11 +1160,11 @@ async function startDshAndAwaitPort(url) {
 }
 
 /**
- * 等待本次启动的 dsh 打印启动广播行（完全启动信号，新旧版本通用）。
- * - 「从不广播的安静 dsh」在 globalState 记忆（dsh.quietBoot），之后直接跳过；
- * - 广播超时的兜底：进程仍存活则放行（渲染前还有代理自检兜底），并记忆
- *   quietBoot，之后不再等待。
- * @param {number} announceBefore 启动前的广播时间戳快照
+ * Wait for this launch's dsh to print the boot announcement line (the fully-started signal, common to old and new versions).
+ * - A "quiet dsh that never announces" is remembered in globalState (dsh.quietBoot) and skipped from then on;
+ * - Fallback for an announcement timeout: let it through if the process is still alive (the proxy self-check is another fallback before rendering), and remember
+ *   quietBoot so it is not waited for again.
+ * @param {number} announceBefore boot-announcement timestamp snapshot taken before the start
  * @returns {Promise<boolean>}
  */
 async function waitDshFullBoot(announceBefore) {
@@ -1176,10 +1176,10 @@ async function waitDshFullBoot(announceBefore) {
   while (Date.now() < deadline) {
     await sleep(250);
     if (managedChild === null) {
-      return false; // 启动即退出/被杀
+      return false; // exited immediately on startup, or was killed
     }
     if (dshBootAnnouncedAt !== announceBefore) {
-      // 广播到位；带令牌时认证代理已开始预换 Cookie，稍候片刻。
+      // Announcement received; with a token the auth proxy has already begun pre-exchanging the cookie, so wait a moment.
       await sleep(300);
       return true;
     }
@@ -1187,7 +1187,7 @@ async function waitDshFullBoot(announceBefore) {
   if (managedChild === null) {
     return false;
   }
-  // 进程存活但始终没有广播行（极老版本的安静 dsh）：记忆后不再等待。
+  // Process alive but no announcement line ever appeared (a very old quiet dsh): remember it and do not wait again.
   if (gContext) {
     gContext.globalState.update('dsh.quietBoot', true).then(() => {}, () => {});
   }
@@ -1195,7 +1195,7 @@ async function waitDshFullBoot(announceBefore) {
 }
 
 /**
- * 并发去重：确保无论有多少视图同时 resolve，都只跑一次启动流程。
+ * Concurrency de-duplication: make sure the startup flow runs only once however many views resolve at the same time.
  */
 function ensureRunningOnce() {
   if (!ensurePromise) {
@@ -1207,9 +1207,9 @@ function ensureRunningOnce() {
 }
 
 /**
- * 释放指定端口上监听的进程（best-effort）。
- * 用于「重启」：本窗口持有的 dsh 由 killTree 结束，这里再兜底清掉本窗口未持有的
- * dsh（外部启动 / 残留进程），确保新进程能成功绑定端口。仅在用户确认重启后调用。
+ * Release the process listening on the given port (best-effort).
+ * Used by "Restart": the dsh held by this window is ended by killTree; as a fallback this also clears any
+ * dsh not held by this window (externally started / leftover process), so a new process can bind the port. Only called after the user confirms a restart.
  * @param {number} port
  * @returns {Promise<void>}
  */
@@ -1404,7 +1404,7 @@ function buildIframeHtml(url, scale) {
   if (target.protocol !== 'http:' && target.protocol !== 'https:') {
     throw new Error(t('不允许的显示地址协议：{0}', [target.protocol]));
   }
-  const origin = target.origin; // 形如 http://127.0.0.1:3080 或 https://xxxx.example.com
+  const origin = target.origin; // for example http://127.0.0.1:3080 or https://xxxx.example.com
   const nonce = makeNonce();
   const s = Number.isFinite(scale) ? Math.min(2, Math.max(0.5, scale)) : 1;
   // Scale with CSS `zoom` (re-layout, rendering at device resolution, crisp at any font size),
@@ -1731,11 +1731,11 @@ window.__ModuleLoader__.load({ id: '${CLIPBOARD_PLUGIN_NAME}', factory: (require
   }
 
   function onKeyDown(e) {
-    if (e.defaultPrevented) return                 // 页面自身已处理，尊重之
+    if (e.defaultPrevented) return                 // the page already handled it; respect that
     if (!enabled()) return
-    if (e.isComposing || e.keyCode === 229) return // IME 组合中不干预
+    if (e.isComposing || e.keyCode === 229) return // do not interfere mid-composition (IME)
     var mod = e.metaKey || e.ctrlKey
-    if (!mod || e.altKey || e.shiftKey) return     // 仅裸 ⌘/Ctrl + 字母
+    if (!mod || e.altKey || e.shiftKey) return     // bare ⌘/Ctrl + letter only
     var lower = String(e.key || '').toLowerCase()
     var cmd = null
     if (lower === 'v') cmd = 'paste'
@@ -1786,7 +1786,7 @@ async function ensureClipboardPlugin(profileDir) {
     const installed = await installedPluginVersion(profileDir, CLIPBOARD_PLUGIN_NAME);
     if (installed === CLIPBOARD_PLUGIN_VERSION) {
       await ensureProfileDeclaration(profileDir, CLIPBOARD_PLUGIN_NAME, null);
-      return false; // 版本一致，无需写入
+      return false; // versions match; nothing to write
     }
     const files = clipboardPluginFiles();
     const base = path.join(profileDir, 'node_modules', CLIPBOARD_PLUGIN_NAME);
@@ -2059,7 +2059,7 @@ async function fetchSessionHistory(base, sid) {
       if (!Number.isFinite(cursor)) cursor = -1;
     }
     if (cursor < 0) {
-      return { events: [] }; // 空会话
+      return { events: [] }; // empty session
     }
     // 2) Fetch the trailing page by cursor (walk back `maxMessages` events from the newest).
     const page = await dshRpc(base, 'session.page', pagePayload(cursor, 4000), 15000);
@@ -2234,7 +2234,7 @@ function listChatSessionFiles(lookbackMinOverride) {
       return process.platform === 'win32' ? n.toLowerCase() : n;
     } catch (_) { return String(localDir || ''); }
   })();
-  const roots = []; // { dir, pri } pri=1 当前工作区，0 其他
+  const roots = []; // { dir, pri } where pri=1 is the current workspace and 0 is any other
   for (const u of chatUserDataDirs()) {
     const ws = path.join(u, 'workspaceStorage');
     try {
@@ -2248,11 +2248,11 @@ function listChatSessionFiles(lookbackMinOverride) {
             const n = process.platform === 'win32' ? fp.toLowerCase() : fp;
             if (n === normLocal || n.startsWith(normLocal + path.sep) || normLocal.startsWith(n + path.sep)) pri = 1;
           }
-        } catch (_) { /* workspace.json 缺失/异常则视为其他工作区 */ }
+        } catch (_) { /* a missing or malformed workspace.json means: treat as another workspace */ }
         const p = path.join(ws, d, 'chatSessions');
         if (fs.existsSync(p)) roots.push({ dir: p, pri });
       }
-    } catch (_) { /* 不存在则跳过 */ }
+    } catch (_) { /* skip when it does not exist */ }
     const empty = path.join(u, 'globalStorage', 'emptyWindowChatSessions');
     if (fs.existsSync(empty)) roots.push({ dir: empty, pri: 1 });
   }
@@ -2400,7 +2400,7 @@ async function locateModelChatSessionId(currentPrompt, messages) {
           bestId = p.sessionId;
         }
       }
-    } catch (_) { /* 定位失败回退哈希键 */ }
+    } catch (_) { /* fall back to the hash key when location fails */ }
     return { bestId, newestEmptyId };
   };
   if (prevPrompt) {
@@ -2430,7 +2430,7 @@ function makeTextPart(text) {
     if (vscode.LanguageModelTextPart) {
       return new vscode.LanguageModelTextPart(String(text));
     }
-  } catch (_) { /* 回落 */ }
+  } catch (_) { /* fall back */ }
   return { type: 'text', value: String(text) };
 }
 
@@ -2457,7 +2457,7 @@ function extractMemoryBlocks(t) {
     const headIdx = lines.findIndex((l) => /^\s*#{1,6}\s/.test(l));
     if (headIdx > 0) inner = lines.slice(headIdx).join('\n').trim();
     if (!inner) continue;
-    if (/is empty\.|no [^.]+ notes have been created/i.test(inner)) continue; // 跳过"空"提示
+    if (/is empty\.|no [^.]+ notes have been created/i.test(inner)) continue; // skip the "empty" notices
     parts.push(inner);
   }
   return parts.join('\n\n');
@@ -2511,7 +2511,7 @@ function stripAndExtractAttachments(t) {
     while ((m = attrRe2.exec(s))) {
       let p = m[1].trim();
       if (/^file:\/\//i.test(p)) {
-        try { p = decodeURIComponent(new URL(p).pathname); } catch (_) { /* 保持原样 */ }
+        try { p = decodeURIComponent(new URL(p).pathname); } catch (_) { /* leave it as is */ }
         if (process.platform === 'win32' && /^\/[A-Za-z]:/.test(p)) p = p.slice(1);
       }
       push(p);
@@ -2567,7 +2567,7 @@ function lmMessageText(m) {
   const role = m && m.role;
   const isUser = role === 'user' || role === 1 || role === 'User';
   const isAssistant = role === 'assistant' || role === 2 || role === 'Assistant';
-  if (!isUser && !isAssistant) return ''; // system(role=3)/tool 等一律忽略（DSH 有自己的 harness）
+  if (!isUser && !isAssistant) return ''; // system (role=3), tool and the like are ignored entirely (DSH has its own harness)
   let text = '';
   if (typeof m.content === 'string') {
     text = m.content;
@@ -2599,7 +2599,7 @@ function lmMessageText(m) {
       // and the reference block is serialized to DSH together with the real question message that follows)
       return attachPaths.length ? (t('【文件引用】\n') + attachPaths.map((p) => '- ' + p).join('\n')) : '';
     }
-    text = noAttach; // 后续解析都基于剥离附件后的文本，文件内容绝不透传
+    text = noAttach; // all later parsing works on the text with attachments stripped; file contents are never passed through
     // Keep Copilot-only memory (the body of userMemory/sessionMemory/repoMemory, with the XML wrapper removed)
     const memText = extractMemoryBlocks(text);
     if (memText) {
@@ -2617,7 +2617,7 @@ function lmMessageText(m) {
     // After stripping the Copilot instructions preamble and the <instructions> block, continue if real content is left
     const cleaned = stripCopilotContext(text);
     if (cleaned !== text) {
-      if (!cleaned) return ''; // 纯 instructions/上下文 → 丢弃
+      if (!cleaned) return ''; // instructions and context only → discard
       text = cleaned;
       const inner2 = extractUserRequest(text);
       if (inner2 !== null) return t('用户：') + inner2 + attachSuffix;
@@ -2722,7 +2722,7 @@ function findDshKnownBoundary(messages, lastUserText) {
         const isUser = r2 === 'user' || r2 === 1 || r2 === 'User';
         const isAssistant = r2 === 'assistant' || r2 === 2 || r2 === 'Assistant';
         if (isAssistant) return j;
-        if (isUser) break; // 答案被编辑/丢失 → 该组问答不完整，继续找更早的同文本提问
+        if (isUser) break; // the answer was edited or lost → that question/answer pair is incomplete; keep looking for an earlier prompt with the same text
       }
     }
   }
@@ -2798,7 +2798,7 @@ async function replayDshAnswer(base, sid, timeoutMs, progress, token) {
       const e = item && item.event ? item.event : item;
       if (e && typeof e.seq === 'number' && e.type === 'turn/start') lastSeq = e.seq > 0 ? e.seq - 1 : 0;
     }
-  } catch (_) { /* 拿不到起点就从 0 开始 */ }
+  } catch (_) { /* start from 0 when the starting point cannot be read */ }
   let blockEndSeen = false;
   while (Date.now() < deadline) {
     if (token.isCancellationRequested) return;
@@ -2855,7 +2855,7 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
   const uiEffort = String((options && (options.modelConfiguration || {}).reasoningEffort) || (options && (options.configuration || {}).reasoningEffort) || '');
   let effort = uiEffort || String(cfg().get('dshPanel.dshReasoningEffort', '') || '');
   if (EFFORT_MAP[effort]) effort = EFFORT_MAP[effort];
-  if (effort && !DSH_EFFORTS.includes(effort)) effort = ''; // 无效档位 → 跟随 DSH 默认
+  if (effort && !DSH_EFFORTS.includes(effort)) effort = ''; // invalid effort level → follow the DSH default
   const displayModel = fixed ? fixed.model : (chatModel || t('DSH 默认模型'));
   const selectionKey = provider && chatModel ? (provider + '/' + chatModel + (effort ? '/' + effort : '')) : '';
   const currentPrompt = lastLmUserText(messages);
@@ -2994,7 +2994,7 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
         }
         if (best) {
           entry = best;
-          map[chatKey] = best; // 登记到当前键下，后续保持一致
+          map[chatKey] = best; // record it under the current key so later turns stay consistent
         }
       } else {
         // First turn: only merge the same question within 60 seconds (VS Code's bare-prompt and with-context calls are only seconds apart)
@@ -3095,7 +3095,7 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
         const e = item && item.event ? item.event : item;
         if (e && typeof e.seq === 'number' && e.seq > lastSeq) lastSeq = e.seq;
       }
-    } catch (_) { /* 读不到游标从 0 开始 */ }
+    } catch (_) { /* start from 0 when the cursor cannot be read */ }
 
     await dshRpc(base, 'session.prompt', {
       requestId: 'vscode-' + Date.now().toString(36) + '-' + crypto.randomBytes(4).toString('hex'),
@@ -3132,11 +3132,11 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
         } else if (e.type === 'assistant/chunk' && e.data && e.data.chunk) {
           const c = e.data.chunk;
           if (c.type === 'text-delta' && typeof c.text === 'string' && c.text.length > 0) {
-            if (!started) started = true; // 防御：错过 turn/start 也照常流式
+            if (!started) started = true; // defensive: stream as usual even if turn/start was missed
             progress.report(makeTextPart(c.text));
           }
         } else if (e.type === 'turn/end') {
-          started = true; // 防御：即使错过 turn/start 也正常结束
+          started = true; // defensive: finish normally even if turn/start was missed
           const reason = e.data && e.data.reason;
           if (reason && reason.kind !== 'completed') {
             const errDesc = reason.error ? (reason.error.code + ': ' + reason.error.message) : reason.kind;
@@ -3187,7 +3187,7 @@ async function selectModelForSession(base, sid, provider, chatModel, effort) {
     await dshRpc(base, 'session.selectModel', payload, 20000);
     return true;
   } catch (_) {
-    return false; // 选择失败则用 DSH 默认模型/档位
+    return false; // if selection fails, use the DSH default model and effort
   }
 }
 
@@ -3263,7 +3263,7 @@ function registerDshModelProvider(context) {
           const dbgDir = path.join(os.homedir(), '.dsh-debug');
           fs.mkdirSync(dbgDir, { recursive: true });
           fs.writeFileSync(path.join(dbgDir, 'provider-info.json'), JSON.stringify({ ts: Date.now(), models: info }, null, 2), 'utf8');
-        } catch (_) { /* 忽略 */ }
+        } catch (_) { /* ignore */ }
         return info;
       },
       provideLanguageModelChatResponse(model, messages, options, progress, token) {
@@ -3281,14 +3281,14 @@ function registerDshModelProvider(context) {
       const copilotChat = vscode.extensions.getExtension('github.copilot-chat');
       if (copilotChat) {
         copilotChat.activate().then(() => {
-          setTimeout(() => { try { dshModelEmitter.fire(); } catch (_) { /* 已释放则忽略 */ } }, 50);
-        }).catch(() => { /* 无监听器则忽略 */ });
+          setTimeout(() => { try { dshModelEmitter.fire(); } catch (_) { /* ignore when already disposed */ } }, 50);
+        }).catch(() => { /* ignore when there are no listeners */ });
       }
-    } catch (_) { /* 未安装或无监听器则忽略 */ }
+    } catch (_) { /* ignore when not installed, or when there are no listeners */ }
     [300, 1200, 3000, 6000].forEach((ms) => {
-      setTimeout(() => { try { dshModelEmitter.fire(); } catch (_) { /* 已释放则忽略 */ } }, ms);
+      setTimeout(() => { try { dshModelEmitter.fire(); } catch (_) { /* ignore when already disposed */ } }, ms);
     });
-    setTimeout(() => { try { vscode.lm.selectChatModels({ vendor: 'dsh' }).catch(() => {}); } catch (_) { /* 忽略 */ } }, 700);
+    setTimeout(() => { try { vscode.lm.selectChatModels({ vendor: 'dsh' }).catch(() => {}); } catch (_) { /* ignore */ } }, 700);
     context.subscriptions.push(dshModelEmitter);
     dshModelProviderRegistered = true;
     console.log(t('[DeepSeek Harness] dsh 语言模型提供方已注册（模型选择器可见），已触发模型信息刷新'));

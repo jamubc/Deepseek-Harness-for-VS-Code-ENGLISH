@@ -135,17 +135,31 @@ if (a.length !== b.length) {
   process.exit(1);
 }
 
+/**
+ * Collapse runs of whitespace so a comment's blanked span cannot masquerade as a
+ * code change.
+ *
+ * A translated comment occupies a different number of characters than the original,
+ * and blanking turns that span into whitespace *in place* — including in the middle
+ * of a line, as with `} catch { /* ignore *\/ }`. Normalising whitespace leaves the
+ * meaningful tokens untouched (identifiers, literals, numbers, operators, punctuation)
+ * while making the blank width irrelevant.
+ *
+ * @param {string} line
+ * @returns {string}
+ */
+function normalize(line) {
+  return line.replace(/\s+/g, ' ').trim();
+}
+
 let diffs = 0;
 for (let i = 0; i < a.length; i++) {
-  // Compare the code residue only. A comment's blanked span has a different width
-  // once translated, so trailing whitespace must not count as a code change; leading
-  // whitespace is kept because it is indentation and a real difference there matters.
-  if (a[i].trimEnd() !== b[i].trimEnd()) {
+  if (normalize(a[i]) !== normalize(b[i])) {
     diffs++;
     if (diffs <= 20) {
       console.error('line ' + (i + 1) + ' differs in code (not just comments):');
-      console.error('  before: ' + JSON.stringify(a[i]));
-      console.error('  after : ' + JSON.stringify(b[i]));
+      console.error('  before: ' + JSON.stringify(normalize(a[i])));
+      console.error('  after : ' + JSON.stringify(normalize(b[i])));
     }
   }
 }
