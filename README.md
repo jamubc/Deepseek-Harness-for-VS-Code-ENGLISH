@@ -16,35 +16,72 @@ A zero-dependency VS Code extension that brings **DeepSeek Harness (DSH)** into 
 > Maintaining this fork? **[docs/UPSTREAM-SYNC.md](docs/UPSTREAM-SYNC.md)** covers the
 > sync, and [TERMINOLOGY.md](TERMINOLOGY.md) records the translation decisions.
 
-## ⚡ Install the English build
+## ⚡ Install
 
-1. Download `deepseek-harness-vscode-english-<version>.vsix` from
-   [Releases](https://github.com/jamubc/Deepseek-Harness-for-VS-Code-ENGLISH/releases/latest).
-2. Install it, either from the terminal:
+**From the Marketplace — recommended.** This is the faster path, and the only one that
+gets you automatic updates.
 
-   ```bash
-    code --install-extension deepseek-harness-vscode-english-<version>.vsix
-   ```
-
-   or in VS Code: `Ctrl+Shift+P` → **Extensions: Install from VSIX…** → pick the file.
-3. `Ctrl+Shift+P` → **Developer: Reload Window**.
-
-The panel, its buttons, the error pages, every setting and the Copilot model picker are
-English from that point on — the extension does not depend on your VS Code display
-language. When you open the panel, the extension auto-detects and starts DSH (if it is
-not installed, the extension prompts you and runs `npm install -g @deepseek-ai/dsh` on
-your behalf).
-
-To build the `.vsix` yourself instead, no tooling is required beyond Node:
+Search the Extensions view (`Ctrl+Shift+X`) for **DeepSeek Harness for VS Code (English)**,
+open the [Marketplace page](https://marketplace.visualstudio.com/items?itemName=jandrewm.deepseek-harness-vscode-english),
+or install it straight from a terminal:
 
 ```bash
-npm run package         # writes dist/deepseek-harness-vscode-english-<version>.vsix
+code --install-extension jandrewm.deepseek-harness-vscode-english
+```
+
+**From a `.vsix` — for offline or pinned installs.** Download
+`deepseek-harness-vscode-english-<version>.vsix` from
+[Releases](https://github.com/jamubc/Deepseek-Harness-for-VS-Code-ENGLISH/releases/latest), then either:
+
+```bash
+code --install-extension deepseek-harness-vscode-english-<version>.vsix
+```
+
+or `Ctrl+Shift+P` → **Extensions: Install from VSIX…** → pick the file.
+
+**From source — nothing needed beyond Node.** The extension is pure JavaScript, with no
+dependencies and no build step:
+
+```bash
+git clone https://github.com/jamubc/Deepseek-Harness-for-VS-Code-ENGLISH.git
+cd Deepseek-Harness-for-VS-Code-ENGLISH
+npm run package        # writes dist/deepseek-harness-vscode-english-<version>.vsix
 npm run install:vsix   # installs it with the code CLI
 ```
 
-If you like this extension, please star [Deepseek-Harness-for-VS-Code](https://github.com/Vithrive/Deepseek-Harness-for-VS-Code); if you need a Chrome extension, take a look at [Deepseek-Harness-for-Chrome](https://github.com/Vithrive/Deepseek-Harness-for-Chrome).
+## 🚀 Quick start
 
-> **Version compatibility**: **from v0.8.34**, this extension supports **dsh v0.1.2-rc.1 and later** — it automatically completes the web browser authentication added in that dsh version (the extension's managed auth proxy keeps the panel and the Copilot bridge free of logins and interruptions throughout; see "dsh web browser authentication" below). It is also **backward compatible** with older dsh versions that do not enable authentication (launch-flag detection, and automatic fallback between the old and new RPC endpoint formats).
+1. **Open the panel.** Click the **DeepSeek Harness** icon in the Activity Bar. Prefer a
+   full editor tab? `Ctrl+Shift+P` → **DeepSeek Harness: Open in Tab**.
+2. **Let it find DSH.** The panel detects a running DSH and starts one for you if needed.
+   If DSH is not installed yet, the extension offers to run
+   `npm install -g @deepseek-ai/dsh` on your behalf — accept the prompt, or install DSH
+   yourself first and reopen the panel.
+3. **Use it.** DSH's own web GUI loads inside the panel, unmodified. That is the whole
+   setup — no account, no API key, and no configuration in the extension.
+
+Everything you see is English: the panel, its buttons, its error pages, every setting, and
+the Copilot model picker. The extension carries its own language pack, so it does not
+depend on your VS Code display language.
+
+**What you need**
+
+- VS Code 1.75 or newer.
+- Node.js with `npm` on your `PATH`, so DSH itself can be installed and started. To point
+  the extension at an existing DSH instead, set `dshPanel.dshCommand` to its full path.
+- Nothing else. DSH's own web authentication, where your dsh version uses it, is handled
+  for you, so the panel and the Copilot bridge stay free of logins and interruptions.
+
+**Updating**: install from the Marketplace and updates arrive with VS Code's own extension
+updates. On a `.vsix` or source install, run the same install command again with the newer
+file.
+
+**Version compatibility**: from **v0.8.34**, this extension supports **dsh v0.1.2-rc.1 and
+later** — it completes the web browser authentication that dsh version added, on your behalf
+(a managed auth proxy keeps the panel and the Copilot bridge free of logins and
+interruptions; see [dsh web browser authentication](#dsh-web-browser-authentication-since-v0835-automatic-no-action-required)
+below). Older dsh versions that do not enable authentication still work, with automatic
+detection and fallback between the old and new RPC endpoint formats.
 
 ## 🙏 Acknowledgements
 
@@ -211,27 +248,37 @@ Key points:
 The Copilot bridge is an **early release**, but it has been thoroughly tested and is **fully functional**:
 
 - You are welcome to try it on different operating systems (Windows, macOS, and Linux, as well as remote setups such as Remote-SSH, WSL, and Dev Containers);
-- If you run into problems, please report them in [GitHub Issues](https://github.com/Vithrive/Deepseek-Harness-for-VS-Code/issues); the author will respond and improve things as soon as possible;
+- If you run into a problem with the **English build**, please report it in the
+  [English fork's issues](https://github.com/jamubc/Deepseek-Harness-for-VS-Code-ENGLISH/issues).
+  Bugs in DSH itself, or in the extension's underlying behaviour, belong upstream in
+  [Vithrive/Deepseek-Harness-for-VS-Code](https://github.com/Vithrive/Deepseek-Harness-for-VS-Code/issues);
 - To repeat: **the Copilot bridge does not affect the "faithful window" mode** — the panel always renders the DSH web GUI faithfully, injecting nothing into, rewriting nothing in, and intercepting nothing on the page, and it does not interfere with your plugin development or UI customization for DSH.
 
 ---
 
-## 🔧 Install from source (development mode)
+## 🔧 Hack on it (development mode)
 
-This extension is pure JavaScript: it needs no npm install and no build step:
+The extension is pure JavaScript, so there is nothing to build or install before you edit it:
 
 ```bash
 git clone https://github.com/jamubc/Deepseek-Harness-for-VS-Code-ENGLISH.git
 code Deepseek-Harness-for-VS-Code-ENGLISH
 ```
 
-Press `F5` in VS Code to open an Extension Development Host window, then open your project folder in it. To package and install it yourself:
+Press `F5` to open an **Extension Development Host** window with your working copy loaded,
+then open your project folder in that window.
+
+Before sending a change upstream, run the two checks CI runs:
 
 ```bash
-npx --yes @vscode/vsce package --allow-missing-repository
-code --install-extension deepseek-harness-vscode-english-<version>.vsix
+npm run l10n:check   # every user-facing string still resolves to English
+npm test
 ```
 
+Adding or changing English text is a two-file job: put the string in `l10n/bundle.l10n.json`
+and call it through `t()`. [TERMINOLOGY.md](TERMINOLOGY.md) records the translation
+decisions, and [docs/UPSTREAM-SYNC.md](docs/UPSTREAM-SYNC.md) explains how this fork tracks
+upstream.
 ## Prerequisites and known limitations
 
 - **Prerequisites**: DeepSeek Harness is installed (either a global install with `npm install -g @deepseek-ai/dsh` or `npx @deepseek-ai/dsh`; the extension recognizes both, and you can also give a full path through `dshPanel.dshCommand`); by default DSH response headers set neither `X-Frame-Options` nor a strict CSP, so it can be embedded in an iframe normally.
