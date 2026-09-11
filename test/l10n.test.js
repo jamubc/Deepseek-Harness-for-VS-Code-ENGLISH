@@ -132,4 +132,28 @@ const once = JSON.stringify(rawCopy);
 l10n.applyManifestTranslations(rawCopy);
 ok(JSON.stringify(rawCopy) === once, 'applying the patch twice changes nothing');
 
+console.log('l10n: helpers');
+
+// --- format2 mirrors VS Code's substitution rules --------------------------
+ok(l10n.format2('a {0} b {1}', [1, 2]) === 'a 1 b 2', 'format2 substitutes multiple positional placeholders');
+ok(l10n.format2('hi {name}', { name: 'Ada' }) === 'hi Ada', 'format2 substitutes named placeholders');
+ok(l10n.format2('no args', undefined) === 'no args', 'format2 tolerates undefined args');
+ok(l10n.format2('{0} and {0}', ['x']) === 'x and x', 'format2 replaces every occurrence');
+
+// --- bundleSnapshot is a copy, so callers cannot mutate the dictionary -----
+const snap = l10n.bundleSnapshot();
+const snapKey = Object.keys(snap)[0];
+const original = snap[snapKey];
+snap[snapKey] = 'mutated';
+ok(l10n.bundleSnapshot()[snapKey] === original, 'bundleSnapshot returns a copy, not the live dictionary');
+
+// --- the table exposes exactly the manifest strings we expect --------------
+const table = l10n.manifestTranslations();
+ok(Object.keys(table).length > 0, 'manifest translation table is loaded');
+ok(typeof table['description'] === 'string', 'manifest table covers the root description');
+ok(
+  Object.values(table).every((v) => typeof v === 'string'),
+  'every manifest table value is a string'
+);
+
 console.log('\nAll passed: ' + passed + ' assertions');

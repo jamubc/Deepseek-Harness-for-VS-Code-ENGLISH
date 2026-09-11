@@ -237,18 +237,46 @@ function main() {
     }
   }
 
-  // ---- 6. package.nls.json must exist and cover every manifest entry ------
-  if (fs.existsSync(PACKAGE_NLS)) {
+  // ---- 6. package.nls.json must resolve every %token% in package.json -----
+  //
+  // This mirrors what VS Code does at scan time: `localizeManifest` walks the whole
+  // manifest and replaces any string shaped like %key% with the message bundle entry
+  // for `key`. Checking it here means a missing or mistyped token is caught by CI
+  // rather than showing up as a literal "%configuration.…%" in the Settings UI.
+  if (!fs.existsSync(PACKAGE_NLS)) {
+    errors.push('package.nls.json is missing — run: node scripts/l10n-sync-manifest.js --write');
+  } else {
     const nls = readJson(PACKAGE_NLS, 'package.nls.json');
-    const nlsKeys = new Set(Object.keys(nls));
-    for (const dotted of Object.keys(manifestNls)) {
-      if (typeof manifestNls[dotted] !== 'string') continue;
-      if (!nlsKeys.has(dotted)) {
-        warnings.push('package.nls.json has no key for ' + dotted + ' (run: node scripts/l10n-sync-manifest.js)');
+    const tokens = [];
+    const scan = (node, prefix) => {
+      if (typeof node === 'string') {
+        if (node.length > 1 && node[0] === '%' && node.endsWith('%')) {
+          tokens.push({ path: prefix, key: node.slice(1, -1) });
+        }
+        return;
+      }
+      if (Array.isArray(node)) {
+        node.forEach((v, i) => scan(v, prefix ? prefix + '.' + i : String(i)));
+        return;
+      }
+      if (node && typeof node === 'object') {
+        for (const k of Object.keys(node)) scan(node[k], prefix ? prefix + '.' + k : k);
+      }
+    };
+    scan(pkg, '');
+    for (const token of tokens) {
+      if (!(token.key in nls)) {
+        errors.push('package.json ' + token.path + ' references %' + token.key + '%, which package.nls.json does not define');
       }
     }
-  } else {
-    warnings.push('package.nls.json does not exist (run: node scripts/l10n-sync-manifest.js)');
+    // And no entry may be left dangling, or it is dead weight after a rename.
+    const referenced = new Set(tokens.map((x) => x.key));
+    for (const key of Object.keys(nls)) {
+      if (!referenced.has(key)) {
+        warnings.push('package.nls.json defines ' + key + ', which package.json no longer references');
+      }
+    }
+    if (!tokens.length) errors.push('package.json contains no %token% strings; manifest sync has not run');
   }
 
   // ---- report -------------------------------------------------------------

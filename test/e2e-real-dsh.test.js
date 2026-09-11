@@ -11,6 +11,7 @@
  *  5) GET / through the proxy → 200 home page; POST /api/workspace.create (a real RPC envelope) → 200;
  *  6) cleanup: taskkill ends the test instance.
  */
+const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
@@ -49,7 +50,39 @@ function getJson(port, reqPath, method, body) {
   });
 }
 
+/**
+ * Can dsh write its profile directory?
+ *
+ * dsh keeps its state under ~/.dsh. When that tree is read-only (a sandboxed or
+ * containerised CI runner, for instance) dsh exits immediately with EROFS before it
+ * ever prints an authentication link, and this test would report a failure that has
+ * nothing to do with the extension. Detect that up front and skip instead, so a
+ * green run still means something.
+ *
+ * @returns {string|null} a human-readable reason to skip, or null when dsh can run
+ */
+function skipReason() {
+  const home = os.homedir();
+  const profile = path.join(home, '.dsh');
+  const probe = path.join(profile, '.e2e-write-probe');
+  try {
+    fs.mkdirSync(profile, { recursive: true });
+    fs.writeFileSync(probe, 'ok');
+    fs.unlinkSync(probe);
+  } catch (e) {
+    return 'dsh cannot write its profile directory (' + profile + '): ' + (e && e.code ? e.code : e.message);
+  }
+  return null;
+}
+
 async function main() {
+  const skip = skipReason();
+  if (skip) {
+    console.log('SKIP: ' + skip);
+    console.log('      This test needs a real dsh with a writable ~/.dsh profile.');
+    return;
+  }
+
   if (!(await portFree(PORT))) {
     console.error('Port ' + PORT + ' is in use; free it and try again.');
     process.exit(2);

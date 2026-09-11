@@ -14,44 +14,44 @@ const { t, applyManifestTranslations } = require('./l10n.js');
 const VIEW_ID = 'dsh.webview';
 const DEFAULT_URL = 'http://127.0.0.1:3080';
 
-// 当前 webview 视图引用，供“刷新”命令使用。
+// Reference to the current webview view, used by the Refresh command.
 let activeView = null;
-// 由扩展自己启动的 dsh 子进程；复用已有服务时不记录、不管理。
+// The dsh child process started by the extension itself; when reusing an existing service it is neither recorded nor managed.
 let managedChild = null;
-// 防止多个视图实例同时触发启动。
+// Prevents several view instances from triggering startup at the same time.
 let ensurePromise = null;
-// 解析出的 dsh 启动方式：{ cmd, prefix }。null 表示尚未解析或都不可用。
-// 优先全局安装（dsh 命令），其次 npx 缓存安装（npx 安装不会写入全局 PATH）。
+// The resolved dsh invocation: { cmd, prefix }. null means it has not been resolved yet or none is available.
+// Prefer the global installation (the dsh command), then the npx cache installation (an npx install does not write to the global PATH).
 let dshInvocation = null;
 let dshInvocationAt = 0;
-// 编辑器标签页模式：当前打开的 DSH 标签页 panel（未打开时为 null）。
+// Editor tab mode: the currently open DSH tab panel (null when no tab is open).
 let activeTab = null;
-// 扩展上下文（globalState 持久化会话映射）。
+// Extension context (globalState persists the session mapping).
 let gContext = null;
-// dsh 语言模型提供方（模型选择器里的 DSH (DeepSeek Harness)）是否注册成功。
+// Whether the dsh language model provider (DSH (DeepSeek Harness) in the model picker) registered successfully.
 let dshModelProviderRegistered = false;
-// dsh 0.1.2-rc 起新增 web 浏览器认证：进程启动令牌（每次重启变化，从 stdout 学习）。
+// web browser authentication added in dsh 0.1.2-rc: process launch token (changes on every Restart, learned from stdout).
 let dshLaunchToken = null;
-// 本地受管认证代理（null = 未创建或不可用：Remote 场景 / 目标非回环地址）。
+// Local managed auth proxy (null = not created or unavailable: Remote scenario / target is not a loopback address).
 let authProxy = null;
-// ensureAuthProxy 的并发去重：多个视图/API 同时触发时只创建一次。
+// Concurrency de-duplication for ensureAuthProxy: created only once when several views/APIs trigger it at the same time.
 let authProxyPromise = null;
-// 老版本 dsh 不识别 --no-open 时置位（启动快速退出后自动去掉该参数重试）。
+// Set when an old dsh version does not recognize --no-open (after a quick startup exit, the flag is dropped and startup is retried).
 let dshNoOpenBroken = false;
-// dsh 是否支持 web 浏览器认证（首次捕获 stdout 令牌行置 true；
-// 确认为老版 dsh 后置 false 并持久化，启动等待逻辑据此跳过）。
+// Whether dsh supports web browser authentication (set to true when the stdout token line is first captured;
+// set to false and persisted once it is confirmed to be an old dsh, and the startup wait logic skips accordingly).
 let dshAuthCapable;
-// 「dsh web: <url>」打印行的最后时间戳（新旧版本都打印，作为完全启动信号）。
+// Timestamp of the last "dsh web: <url>" print line (printed by both old and new versions, used as the fully-started signal).
 let dshBootAnnouncedAt = 0;
-// 进程内缓存的 --no-open 支持探测结果（undefined=未探测）。
+// In-process cache of the --no-open support probe result (undefined = not probed).
 let dshNoOpenSupported;
-// 认证引导提示的上次弹出时间（冷却，避免反复打扰）。
+// Last time the auth guidance prompt was shown (cooldown, to avoid pestering repeatedly).
 let lastAuthPromptAt = 0;
-// 标签页模式的重载函数（供认证引导完成后重新渲染标签页）。
+// Reload function for tab mode (to re-render the tab once auth guidance completes).
 let tabReloadFn = null;
 
 /**
- * 读取配置。
+ * Read the configuration.
  */
 function cfg() {
   return vscode.workspace.getConfiguration();
@@ -61,26 +61,26 @@ function getUrl() {
   return cfg().get('dshPanel.url', DEFAULT_URL);
 }
 
-// ── 配置输入净化（安全加固：以下设置项会经由 shell:true 的子进程，必须收敛到安全字符集）──
-// 主机名白名单：IPv4/IPv6 字面量与域名。
+// ── Configuration input sanitization (security hardening: the settings below go through a shell:true child process, so they must be constrained to a safe character set) ──
+// Hostname allowlist: IPv4/IPv6 literals and domain names.
 const HOST_PATTERN = /^[A-Za-z0-9._:-]+$/;
-// shell 元字符：出现即拒绝（cmd.exe 与 POSIX sh 都会解释）。
+// shell metacharacters: rejected on sight (both cmd.exe and POSIX sh interpret them).
 const SHELL_META_PATTERN = /[&|<>^%!"`;]|\r|\n/;
 const DEFAULT_PORT = 3080;
 
 function getHost() {
   const raw = String(cfg().get('dshPanel.host', '127.0.0.1') || '').trim();
-  // 非法（含 shell 元字符等）一律回退默认回环地址，堵 startDsh 参数注入。
+  // Anything invalid (shell metacharacters and the like) falls back to the default loopback address, closing startDsh argument injection.
   return HOST_PATTERN.test(raw) ? raw : '127.0.0.1';
 }
 
 function getPort() {
-  // 强制整数 + 端口范围校验：堵 freePort 的 shell 拼接注入与 startDsh 参数注入。
+  // Integer coercion plus port range validation: closes shell concatenation injection in freePort and argument injection in startDsh.
   const n = Math.floor(Number(cfg().get('dshPanel.port', DEFAULT_PORT)));
   return Number.isFinite(n) && n >= 1 && n <= 65535 ? n : DEFAULT_PORT;
 }
 
-/** 净化用户配置的命令：拒绝 shell 元字符（允许空格，Windows shell 启动前会加引号）。 */
+/** Sanitize the user-configured command: reject shell metacharacters (spaces are allowed; the Windows shell adds quotes before launch). */
 function sanitizeCommand(cmd) {
   const s = String(cmd || '').trim();
   if (!s || SHELL_META_PATTERN.test(s)) return null;
@@ -88,13 +88,13 @@ function sanitizeCommand(cmd) {
 }
 
 function getDshCommand() {
-  // 配置了非法命令（含元字符）时回退 'dsh'，后续探测失败会自然落到 npx 兜底。
+  // When an invalid command is configured (metacharacters included), fall back to 'dsh'; a later probe failure naturally lands on the npx fallback.
   return sanitizeCommand(cfg().get('dshPanel.dshCommand', 'dsh')) || 'dsh';
 }
 
 /**
- * 执行一条命令并判断是否成功（exit code === 0）。
- * 在扩展运行的机器上执行 —— 本地场景即本机，Remote/vscode-server 场景即远程服务器。
+ * Run one command and report whether it succeeded (exit code === 0).
+ * Runs on the machine where the extension runs — the local machine in a local scenario, the remote server in a Remote/vscode-server scenario.
  * @param {string} cmd
  * @param {string[]} args
  * @param {number} timeoutMs
@@ -102,15 +102,15 @@ function getDshCommand() {
  */
 function runCommandOk(cmd, args, timeoutMs = 15000) {
   return new Promise((resolve) => {
-    // 纵深校验（PR #12 思路）：cmd 来自 getDshCommand()（已净化），此处再拒一次。
+    // Defense in depth (PR #12 idea): cmd comes from getDshCommand() (already sanitized), rejected once more here.
     if (typeof cmd !== 'string' || cmd === '' || SHELL_META_PATTERN.test(cmd)) {
       resolve(false);
       return;
     }
-    // 与 startDsh 同规则：含空格且确实是一个存在的文件 → 加引号；多 token 前缀 → shell 分词。
-    // POSIX 上 shell:false 参数按数组直达进程（无解释器、无注入面）；
-    // Windows 上 shell:true 为命中 dsh.cmd shim 所必需（Node ≥18.20 无 shell 执行
-    // .cmd 会抛 EINVAL，CVE-2024-27980 防护），注入面由上方的净化+白名单收敛。
+    // Same rules as startDsh: contains spaces and really is an existing file → quote it; multi-token prefix → let the shell tokenize.
+    // On POSIX, shell:false passes arguments straight to the process as an array (no interpreter, no injection surface);
+    // on Windows, shell:true is required to hit the dsh.cmd shim (on Node ≥18.20 executing
+    // .cmd without a shell throws EINVAL, the CVE-2024-27980 hardening), and the injection surface is closed by the sanitization + allowlist above.
     const cmdText = (process.platform === 'win32' && /\s/.test(cmd) && fs.existsSync(cmd)) ? '"' + cmd + '"' : cmd;
     const child = spawn(cmdText, args, {
       shell: process.platform === 'win32',
@@ -134,22 +134,22 @@ function runCommandOk(cmd, args, timeoutMs = 15000) {
 }
 
 /**
- * 执行命令并捕获 stdout（用于探测 dsh 能力，如 `dsh web --help`）。
+ * Run a command and capture stdout (used to probe dsh capabilities, e.g. `dsh web --help`).
  * @param {string} cmd
  * @param {string[]} args
  * @param {number} timeoutMs
- * @returns {Promise<string>} stdout（失败抛错）
+ * @returns {Promise<string>} stdout (rejects on failure)
  */
 function runCommandOutput(cmd, args, timeoutMs = 12000) {
   return new Promise((resolve, reject) => {
-    // 纵深校验（PR #12 思路）：同 runCommandOk。
+    // Defense in depth (PR #12 idea): same as runCommandOk.
     if (typeof cmd !== 'string' || cmd === '' || SHELL_META_PATTERN.test(cmd)) {
       reject(new Error(t('命令包含 shell 元字符或为空，已拒绝执行')));
       return;
     }
     if (process.platform === 'win32') {
-      // Windows：dsh 为 .cmd shim，必须经 cmd.exe（无 shell 会 EINVAL/ENOENT，
-      // 见 CVE-2024-27980 防护）；cmd/参数均已净化，含空格文件路径加引号。
+      // Windows: dsh is a .cmd shim and must go through cmd.exe (without a shell it is EINVAL/ENOENT,
+      // see the CVE-2024-27980 hardening); cmd/arguments are already sanitized, and file paths with spaces are quoted.
       const quoted = (/\s/.test(cmd) && fs.existsSync(cmd)) ? `"${cmd}"` : cmd;
       exec(`${quoted} ${args.join(' ')}`, {
         timeout: timeoutMs,
@@ -160,8 +160,8 @@ function runCommandOutput(cmd, args, timeoutMs = 12000) {
         else resolve(String(stdout || ''));
       });
     } else {
-      // POSIX：execFile 无 shell——参数按数组直达进程（采纳 PR #12 的第二层防御：
-      // 即使净化被绕过，元字符也只是字面文件名字符，不会注入）。
+      // POSIX: execFile has no shell — arguments go straight to the process as an array (the second layer of defense from PR #12:
+      // even if sanitization is bypassed, metacharacters are merely literal file-name characters and cannot inject).
       execFile(cmd, args, {
         timeout: timeoutMs,
         windowsHide: true,
@@ -175,12 +175,12 @@ function runCommandOutput(cmd, args, timeoutMs = 12000) {
 }
 
 /**
- * 解析可用的 dsh 启动方式，返回 { cmd, prefix } 或 null。
- * 1) 优先配置的 dsh 命令（默认 'dsh'，即 npm 全局安装、已写入 PATH）；
- * 2) 回退到 npx 缓存安装（npx 安装只缓存到 npx 目录，不写全局 PATH，
- *    此时 'dsh' 不在 PATH 里，但 'npx @deepseek-ai/dsh' 仍可运行）。
- * 探测 npx 用 --no-install：只检查本地/全局/npx 缓存，缺失时不触发下载，
- * 从而保留「完全未安装时弹出安装提示」的既有流程。
+ * Resolve an available dsh invocation and return { cmd, prefix }, or null.
+ * 1) the configured dsh command first (default 'dsh', i.e. installed globally via npm and already on the PATH);
+ * 2) fall back to the npx cache installation (an npx install only caches into the npx directory and does not write to the global PATH,
+ *    so 'dsh' is not on the PATH, but 'npx @deepseek-ai/dsh' still runs).
+ * The npx probe uses --no-install: it only checks the local/global/npx caches and does not trigger a download when missing,
+ * which preserves the existing flow of showing an install prompt when nothing is installed at all.
  * @returns {Promise<{cmd: string, prefix: string[]} | null>}
  */
 async function resolveDshInvocation() {
@@ -195,7 +195,7 @@ async function resolveDshInvocation() {
 }
 
 /**
- * 安装 dsh（npm 全局安装）。在远程场景即在服务器上执行。
+ * Install dsh (npm global install). In a remote scenario this runs on the server.
  * @returns {Promise<void>}
  */
 function installDsh() {
@@ -214,12 +214,12 @@ function installDsh() {
 }
 
 /**
- * 确保 dsh 已安装。未安装时，按配置提示用户并代为安装。
- * @returns {Promise<boolean>} 最终是否已安装可用。
+ * Make sure dsh is installed. When it is missing, prompt the user according to the configuration and install it on their behalf.
+ * @returns {Promise<boolean>} whether it is installed and usable in the end.
  */
 async function ensureDshInstalled() {
-  // 已解析成功过的启动方式直接复用（15 分钟内）：避免每次提问都起子进程探测
-  // dsh/npx（并发聊天时重复探测会拖慢扩展宿主、造成后一个聊天卡顿）。
+  // An invocation that has already resolved successfully is reused directly (within 15 minutes): this avoids spawning a subprocess to probe
+  // dsh/npx on every prompt (repeated probing during concurrent chats slows the extension host and makes the later chat stutter).
   if (dshInvocation && (Date.now() - dshInvocationAt) < 15 * 60 * 1000) {
     return true;
   }
@@ -270,10 +270,10 @@ async function ensureDshInstalled() {
 }
 
 /**
- * 将服务地址转换为 webview 可访问的显示地址。
- * 本地场景返回原地址；Remote/vscode-server 场景通过 asExternalUri
- * 自动建立端口转发（可能是带本地转发端口的地址，也可能是 HTTPS 转发域名），
- * 把远程 3080 暴露到本地供 iframe 加载。
+ * Convert the service address into a display address the webview can reach.
+ * In a local scenario the original address is returned; in a Remote/vscode-server scenario, asExternalUri
+ * sets up port forwarding automatically (either an address with a local forwarded port or an HTTPS forwarding domain),
+ * exposing the remote 3080 locally for the iframe to load.
  * @returns {Promise<string>}
  */
 async function resolveDisplayUrl() {
@@ -287,8 +287,8 @@ async function resolveDisplayUrl() {
 }
 
 /**
- * 工作区目录：优先 VS Code 打开的第一个工作区文件夹，否则退回用户主目录。
- * 这就是 dsh 启动时的工作区（cwd）。
+ * Workspace directory: the first workspace folder opened in VS Code, otherwise the user home directory.
+ * This is the workspace (cwd) dsh starts in.
  * @returns {string}
  */
 function getWorkspaceDir() {
@@ -300,7 +300,7 @@ function getWorkspaceDir() {
 }
 
 /**
- * 探测 DSH 服务是否可访问。连接成功（任意状态码）即视为已打开。
+ * Probe whether the DSH service is reachable. A successful connection (any status code) counts as open.
  * @param {string} url
  * @param {number} timeoutMs
  * @returns {Promise<boolean>}
@@ -325,7 +325,7 @@ function sleep(ms) {
 }
 
 /**
- * 向 DSH 的 /api 端点发送 JSON RPC 请求。
+ * Send a JSON RPC request to the DSH /api endpoint.
  * @param {string} url
  * @param {object} payload
  * @param {number} timeoutMs
@@ -373,7 +373,7 @@ function httpPostJson(url, payload, timeoutMs = 5000) {
 }
 
 /**
- * 判断是否为 VS Code 注入的"非对话"内容块（系统提示词/环境信息/上下文提醒等）。
+ * Determine whether this is a "non-conversation" content block injected by VS Code (system prompt/environment info/context reminders, etc.).
  * @param {string} t
  * @returns {boolean}
  */
@@ -386,38 +386,38 @@ function isJunkUserText(text) {
 }
 
 /**
- * 从 <userRequest>...</userRequest> 包裹中提取真实提问；未包裹返回 null。
+ * Extract the real prompt from a <userRequest>...</userRequest> wrapper; return null when it is not wrapped.
  * @param {string} t
  * @returns {string|null}
  */
 function extractUserRequest(t) {
   let m = t.match(/<userRequest>\s*([\s\S]*?)\s*<\/userRequest>/);
   if (m) return m[1].trim();
-  // VS Code 也会把真实提问包在 <prompt>…</prompt> 里（前面常跟 instructions/上下文块）
+  // VS Code also wraps the real prompt in <prompt>…</prompt> (usually preceded by instructions/context blocks)
   m = t.match(/<prompt>\s*([\s\S]*?)\s*<\/prompt>/);
   return m ? m[1].trim() : null;
 }
 
 /**
- * 剥离 VS Code 注入的 Copilot instructions 前置说明与 <instructions>…</instructions> 块。
- * 这些是「上下文」不是用户提问；DSH 有自己的指令体系，不应作为对话内容回传。
+ * Strip the Copilot instructions preamble injected by VS Code and the <instructions>…</instructions> block.
+ * These are "context", not a user prompt; DSH has its own instruction system, so they should not be sent back as conversation content.
  * @param {string} t
  * @returns {string}
  */
 function stripCopilotContext(t) {
   let s = String(t || '');
-  // 去掉 <instructions>…</instructions>（含 .copilot/instructions 附件与 AGENTS.md 等引用）
+  // Remove <instructions>…</instructions> (including the .copilot/instructions attachment and references such as AGENTS.md)
   s = s.replace(/<instructions>[\s\S]*?<\/instructions>/gi, '');
-  // 去掉 VS Code 的 instructions 前置说明句（中英文变体兜底）
+  // Remove the VS Code instructions preamble sentence (fallback for the Chinese and English variants)
   s = s.replace(/when generating code, please follow these user provided coding instructions\.?/gi, '');
   s = s.replace(/you can ignore an instruction if it contradicts a system message\.?/gi, '');
   return s.trim();
 }
 
 /**
- * 把 VS Code 当前工作区注册到 DSH 的工作区列表。
- * workspace/create 是幂等的：已存在时返回现有记录，不会重复。
- * 尽力而为，失败不影响面板渲染。
+ * Register the current VS Code workspace with the DSH workspace list.
+ * workspace/create is idempotent: it returns the existing record when one is already there and never duplicates.
+ * Best effort; a failure does not affect panel rendering.
  * @returns {Promise<boolean>}
  */
 async function registerWorkspace() {
@@ -434,25 +434,25 @@ async function registerWorkspace() {
 }
 
 // =====================================================================
-// dsh web 浏览器认证（dsh 0.1.2-rc 起新增）与本地受管认证代理
+// dsh web browser authentication (added in dsh 0.1.2-rc) and the local managed auth proxy
 // ---------------------------------------------------------------------
-// 新版 dsh web 每次启动都会生成一个「进程启动令牌」，并往 stdout 打印形如
-//   dsh web: http://127.0.0.1:3080/?token=<64位令牌>
-// 的认证链接；浏览器打开该链接时，服务器用令牌换取 `HttpOnly; SameSite=Strict`
-// 的签名 Cookie（绑定请求 Host），此后所有请求凭 Cookie 通过；裸地址一律 401。
-// /api 另有浏览器信任围栏：Host 必须回环（或受信）、Origin 必须与 Host 一致、
-// 拒绝跨站 sec-fetch-site。
+// Every launch of a new dsh web generates a "process launch token" and prints to stdout an authentication link of the form
+//   dsh web: http://127.0.0.1:3080/?token=<64-character token>
+// When a browser opens that link, the server exchanges the token for a signed `HttpOnly; SameSite=Strict`
+// Cookie (bound to the request Host); every request afterwards passes with the Cookie, and a bare address always gets 401.
+// /api has an additional browser trust fence: the Host must be loopback (or trusted), the Origin must match the Host, and
+// cross-site sec-fetch-site is rejected.
 //
-// webview 里 dsh 页面处于第三方 iframe 上下文，SameSite=Strict 的 Cookie 在
-// 其中无法设置也无法携带，因此「iframe 直接加载 token 链接」不可靠。故改为：
-// 扩展捕获 stdout 里的令牌链接，在本机回环随机端口启动「认证代理」，由代理
-// 完成令牌→Cookie 换发，随后给每个转发请求注入 Cookie 与 Host。webview 与
-// 扩展自身的 /api 调用全部改走代理——不关闭 dsh 任何安全机制，全程无感。
+// Inside the webview the dsh page sits in a third-party iframe context, where a SameSite=Strict Cookie can neither
+// be set nor be sent, so "load the token link directly in the iframe" is unreliable. The approach is therefore:
+// the extension captures the token link from stdout and starts an "auth proxy" on a random local loopback port; the proxy
+// performs the token→Cookie exchange, then injects the Cookie and Host into every forwarded request. The webview and
+// the extension's own /api calls all go through the proxy — no dsh security mechanism is disabled, and it is seamless throughout.
 // =====================================================================
 
 const AUTH_PROXY_STATE_KEY = 'dsh.webAuth.tokenCache';
 
-/** 是否为本地（非 Remote）且 dshPanel.url 指向回环地址的场景。 */
+/** Whether this is a local (non-Remote) scenario where dshPanel.url points at a loopback address. */
 function isLocalLoopbackTarget() {
   try {
     if (vscode.env && vscode.env.remoteName) return false;
@@ -463,7 +463,7 @@ function isLocalLoopbackTarget() {
   }
 }
 
-/** 与 dsh 服务端一致的 Host 归一化：new URL('http://' + host).host。 */
+/** Host normalization matching the dsh server: new URL('http://' + host).host. */
 function normAuthority(hostHeader) {
   try {
     return new URL('http://' + String(hostHeader || '')).host;
@@ -472,7 +472,7 @@ function normAuthority(hostHeader) {
   }
 }
 
-/** 从认证链接或裸令牌字符串中提取 token 参数值。 */
+/** Extract the token parameter value from an authentication link or a bare token string. */
 function extractTokenParam(input) {
   const s = String(input || '').trim();
   if (/^[A-Za-z0-9_.\-]{16,}$/.test(s)) return s; // 本身就是令牌
@@ -481,13 +481,13 @@ function extractTokenParam(input) {
 }
 
 /**
- * 学习/更新 dsh 启动令牌（来自 stdout 行或用户粘贴的认证链接）。
- * 更新后立即为代理的本机来源（127.0.0.1 / localhost）静默换发 Cookie，
- * 并把令牌缓存进 globalState，供其他 VS Code 窗口 / 重载后复用（免打扰）。
+ * Learn/update the dsh launch token (from a stdout line or an authentication link pasted by the user).
+ * Right after the update, silently refresh the Cookie for the proxy's local origins (127.0.0.1 / localhost),
+ * and cache the token in globalState so other VS Code windows / reloads can reuse it (without bothering the user).
  * @param {string} tokenOrUrl
- * @returns {boolean} 是否成功提取到令牌
+ * @returns {boolean} whether a token was extracted successfully
  */
-/** 记录/持久化 dsh 的 web 认证能力（true=支持，false=老版无认证）。 */
+/** Record/persist the web authentication capability of dsh (true = supported, false = old version without authentication). */
 function setDshAuthCapable(value) {
   dshAuthCapable = value;
   if (gContext) {
@@ -514,15 +514,15 @@ function learnDshToken(tokenOrUrl) {
 }
 
 /**
- * 确保本地受管认证代理已启动（127.0.0.1 随机端口，仅本机可访问）。
- * Remote 场景或目标非回环地址时返回 null（维持原直连行为）。
+ * Make sure the local managed auth proxy is running (random port on 127.0.0.1, reachable only from this machine).
+ * Returns null in a Remote scenario or when the target is not a loopback address (keeping the original direct connection).
  * @returns {Promise<object|null>}
  */
 async function ensureAuthProxy() {
   if (!isLocalLoopbackTarget()) return null;
   if (authProxy) {
     if (authProxy.target() !== getUrl()) {
-      // 目标被改配置：旧 Cookie/令牌对新实例无效，整组重建。
+      // Target changed by configuration: the old Cookie/token is invalid for the new instance, so the whole group is rebuilt.
       const old = authProxy;
       authProxy = null;
       authProxyPromise = null;
@@ -541,7 +541,7 @@ async function ensureAuthProxy() {
       return null;
     }
     authProxy = proxy;
-    // 优先复用其他窗口/上次会话缓存的令牌与认证能力标记，尽量无感。
+    // Prefer reusing the token and auth capability flag cached by other windows/the previous session, to stay as seamless as possible.
     if (gContext) {
       try {
         if (dshAuthCapable === undefined) {
@@ -567,14 +567,14 @@ async function ensureAuthProxy() {
 }
 
 /**
- * 创建认证代理 HTTP 服务器：
- * - 监听 127.0.0.1 随机端口（localhost 亦可访问，服务于标签页 origin 隔离）；
- * - 每个来源 authority（请求 Host）独立持有换取到的签名 Cookie；
- * - 转发时注入 Host 与 Cookie；遇 401 且持有令牌时自动重换并重试一次；
- * - 响应剥离 Set-Cookie（Cookie 由代理持有，不进 webview 第三方上下文）；
- * - WebSocket 升级按原头转发并双向透传（注入 Host/Cookie）。
- * @param {string} targetUrl dsh web 服务地址
- * @returns {Promise<object>} 代理句柄
+ * Create the auth proxy HTTP server:
+ * - listens on a random 127.0.0.1 port (also reachable as localhost, which serves tab origin isolation);
+ * - each source authority (request Host) holds its own exchanged signed Cookie;
+ * - injects Host and Cookie when forwarding; on 401 with a token held, re-exchanges automatically and retries once;
+ * - strips Set-Cookie from responses (the proxy holds the Cookie, so it never enters the webview third-party context);
+ * - forwards WebSocket upgrades with the original headers and passes traffic through in both directions (injecting Host/Cookie).
+ * @param {string} targetUrl dsh web service address
+ * @returns {Promise<object>} proxy handle
  */
 function createAuthProxy(targetUrl) {
   return new Promise((resolve, reject) => {
@@ -585,7 +585,7 @@ function createAuthProxy(targetUrl) {
     let token = null;
     let port = 0;
 
-    /** 为指定 authority 换发 Cookie（GET /?token=，Host 指向代理自身 authority）。 */
+    /** Exchange a Cookie for the given authority (GET /?token=, with Host pointing at the proxy's own authority). */
     function exchangeFor(authority) {
       const key = normAuthority(authority) || String(authority);
       if (!token) return Promise.resolve(null);
@@ -1239,7 +1239,7 @@ function freePort(port) {
         }
       });
     } else {
-      // POSIX：fuser 优先，失败退回 lsof + kill。命令本身 best-effort，忽略退出码。
+      // POSIX: prefer `fuser`, fall back to `lsof` + `kill`. The commands themselves are best-effort, so exit codes are ignored.
       exec(`fuser -k ${port}/tcp 2>/dev/null`, { timeout: 10000 }, () => {
         exec(`lsof -ti:${port} 2>/dev/null | xargs -r kill -9 2>/dev/null`, { timeout: 10000 }, () => resolve());
       });
@@ -1248,33 +1248,33 @@ function freePort(port) {
 }
 
 /**
- * 重启 dsh web：停掉当前 dsh、释放端口、重新启动并等待就绪。
- * 本窗口持有的 dsh 直接 killTree；本窗口未持有的（外部启动/残留）由 freePort 按端口释放，
- * 调用方需先征得用户确认，避免误杀其他窗口正在使用的 dsh。
- * @returns {Promise<boolean>} 是否重启成功就绪。
+ * Restart `dsh web`: stop the current dsh, free the port, start it again, and wait until it is ready.
+ * The dsh owned by this window is killed directly with `killTree`; a dsh this window does not own (started externally / left over) is released by `freePort` per port,
+ * and callers must obtain user confirmation first, to avoid killing a dsh that other windows are using.
+ * @returns {Promise<boolean>} Whether the restart succeeded and became ready.
  */
 async function restartDsh() {
   const url = getUrl();
-  // 1. 结束本窗口启动的 dsh 进程树。
+  // 1. End the dsh process tree started by this window.
   if (managedChild) {
     killTree(managedChild);
     managedChild = null;
   }
-  // 2. 释放端口（兜底外部启动 / 残留进程）。
+  // 2. Free the port (fallback for externally started / leftover processes).
   await freePort(getPort());
-  // 3. 等端口真正释放（最多约 5 秒）。
+  // 3. Wait for the port to actually be released (about 5 seconds at most).
   for (let i = 0; i < 10; i++) {
     await sleep(500);
     if (!(await checkUrl(url))) break;
   }
-  // 4. 重新启动并等待就绪（最多约 30 秒；含 --no-open 兼容回退）。
+  // 4. Start it again and wait until ready (about 30 seconds at most; includes the `--no-open` compatibility fallback).
   return startDshAndWaitReady(url);
 }
 
 /**
- * 计算 iframe 的字体缩放比例。
- * DSH 对话正文基准字号为 16px，按 editor.fontSize / 16 缩放，
- * 使面板字号跟随编辑器；编辑器字号安全夹取到 8..72，缩放夹取到 0.5..2。
+ * Compute the font scale for the iframe.
+ * The DSH conversation body uses a base font size of 16px, so scale by `editor.fontSize` / 16
+ * to make the panel font size follow the editor; the editor font size is safely clamped to 8..72 and the scale to 0.5..2.
  * @returns {number}
  */
 function getFontScale() {
@@ -1287,7 +1287,7 @@ function getFontScale() {
 }
 
 /**
- * 生成一次性 CSP nonce，用于放行内联缩放监听脚本。
+ * Generate a one-shot CSP nonce used to admit the inline zoom listener script.
  * @returns {string}
  */
 function makeNonce() {
@@ -1358,8 +1358,8 @@ function buildErrorHtml(reason) {
 }
 
 /**
- * 标签页模式下的侧边栏占位页：DSH 已由标签页接管，侧边栏不再重复加载，
- * 避免两个 webview 同时加载 DSH 导致插件加载互斥（DSH 前端在 webview 双实例场景的限制）。
+ * Sidebar placeholder page in tab mode: DSH has been taken over by the tab, so the sidebar no longer loads it again,
+ * avoiding two webviews loading DSH at the same time, which makes plugin loading mutually exclusive (a limitation of the DSH frontend with two webview instances).
  */
 function buildSuspendedHtml() {
   return `<!DOCTYPE html>
@@ -1391,10 +1391,10 @@ function buildSuspendedHtml() {
 }
 
 function buildIframeHtml(url, scale) {
-  // 解析显示地址，仅放行 http/https，并把其精确 origin 写入 frame-src，
-  // 不再通配整个本机回环地址段，保持 webview 沙箱最小权限。
-  // Remote 场景下 asExternalUri 可能返回带转发端口的 localhost 地址，也可能返回 HTTPS 转发域名，
-  // 这里都按其实际 origin 精确放行，因此两种形式都兼容。
+  // Parse the display URL, allow only http/https, and write its exact origin into `frame-src`,
+  // instead of wildcarding the whole local loopback range, keeping the webview sandbox at least privilege.
+  // In Remote scenarios `asExternalUri` may return a localhost address with a forwarded port, or an HTTPS forwarding domain,
+  // so both are allowed here by their actual origin, and both forms are therefore supported.
   let target;
   try {
     target = new URL(url);
@@ -1407,8 +1407,8 @@ function buildIframeHtml(url, scale) {
   const origin = target.origin; // 形如 http://127.0.0.1:3080 或 https://xxxx.example.com
   const nonce = makeNonce();
   const s = Number.isFinite(scale) ? Math.min(2, Math.max(0.5, scale)) : 1;
-  // 用 CSS zoom 缩放（重新布局、按设备分辨率渲染，任意字号下清晰），
-  // 不用 transform:scale（渲染后栅格化缩放，非整数倍缩放时整页模糊）。
+  // Scale with CSS `zoom` (re-layout, rendering at device resolution, crisp at any font size),
+  // not `transform:scale` (scales a rasterized render, blurring the whole page at non-integer scale factors).
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1439,16 +1439,16 @@ function buildIframeHtml(url, scale) {
     if (data.type === 'dsh-font-scale' && typeof data.scale === 'number') {
       apply(data.scale);
     } else if (data.type === 'dsh-open-link' && typeof data.url === 'string') {
-      // DSH 页面内点击外部链接：转发给扩展宿主，用系统浏览器打开。
+      // External link clicked inside the DSH page: forward it to the extension host and open it in the system browser.
       var u = data.url;
-      // 注意：此处必须写成 \\/\\/ —— 模板字面量会把 \/ 折叠成 /，
-      // 若写成 \/\/ 则注入的脚本变成 /^https?:///i，整段内联脚本语法错误，
-      // 导致 insert-selection 消息监听器注册失败（发送选中内容不生效）。
+      // Note: this must be written as \\/\\/ — the template literal collapses \/ into /,
+      // writing \/\/ instead turns the injected script into /^https?:///i, a syntax error for the whole inline script,
+      // which makes the insert-selection message listener fail to register (Send Selection stops working).
       if (/^https?:\\/\\//i.test(u)) {
         vscode.postMessage({ type: 'dsh-open-link', url: u });
       }
     } else if (data.type === 'insert-selection') {
-      // 扩展宿主发来的「选中代码」：转发给 DSH iframe，由 dsh-drop-caret 插件插入对话框。
+      // "Selected code" sent by the extension host: forward it to the DSH iframe, and the dsh-drop-caret plugin inserts it into the composer.
       try {
         if (!frame || !frame.contentWindow) {
           vscode.postMessage({ type: 'insert-selection-ack', status: 'no-frame' });
@@ -1479,18 +1479,18 @@ function escapeHtml(s) {
 }
 
 // =====================================================================
-// DSH 配套插件自动安装/管理
-// 架构原因：面板把 DSH Web GUI 内嵌在跨域 iframe 中，扩展（webview 是
-// iframe 的父容器）受安全隔离无法直接操作 DSH 页面内部的输入框。
-// 「拖文件/文件夹/选中代码段插入对话框」必须在 DSH 页面内部由插件接收，
-// 因此扩展自动在 DSH web profile 中补齐配套插件 dsh-drop-caret，
-// 用户只需安装本扩展，无需手动安装 DSH 插件。
+// DSH companion plugin auto-install / management
+// Architectural reason: the panel embeds the DSH Web GUI in a cross-origin iframe, and the extension (the webview is
+// the iframe's parent container) is security-isolated and cannot directly operate the input fields inside the DSH page.
+// "Drag files / folders / selected code into the composer" must be received by a plugin inside the DSH page,
+// so the extension automatically adds the companion plugin dsh-drop-caret to the DSH web profile,
+// and users only need to install this extension, with no manual DSH plugin installation.
 // =====================================================================
 const DSH_PLUGIN_NAME = 'dsh-drop-caret';
 const DSH_PLUGIN_MIN = '0.2.2';
 const NPMJS_REGISTRY = 'https://registry.npmjs.org/';
-// 内置分发的兼容插件（随扩展文件直接写入 DSH web profile，不经 npm）：
-// 修复 macOS 上 DSH 页面被本扩展以跨源 iframe 内嵌时 ⌘C/⌘V/⌘X 失效的问题。
+// Bundled compatibility plugin (written directly into the DSH web profile with the extension files, not through npm):
+// Fixes ⌘C/⌘V/⌘X not working on macOS when this extension embeds the DSH page in a cross-origin iframe.
 const CLIPBOARD_PLUGIN_NAME = 'dsh-webview-clipboard';
 const CLIPBOARD_PLUGIN_VERSION = '0.2.1';
 
@@ -1502,7 +1502,7 @@ function dshWebProfileDir() {
   return path.join(dshHomeDir(), 'profiles', 'web');
 }
 
-/** 简单版本比较：a >= b 返回 >=0，a < b 返回 <0。 */
+/** Simple version comparison: returns >=0 when a >= b, and <0 when a < b. */
 function compareVersions(a, b) {
   const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
   const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
@@ -1527,10 +1527,10 @@ async function writeJsonFile(file, obj) {
 }
 
 /**
- * 幂等：确保 profile 的 package.json 声明该插件（dependencies + dsh.profile.bundles）。
- * @param {string|null} versionSpec 依赖版本范围；传 null 表示不写入 dependencies
- *   （用于随扩展内置分发、直接落盘的插件——npm 注册表上没有该包，写进
- *   dependencies 反而会让用户后续 pnpm / dsh plugin add 解析失败）。
+ * Idempotent: make sure the profile's `package.json` declares this plugin (`dependencies` + `dsh.profile.bundles`).
+ * @param {string|null} versionSpec dependency version range; passing `null` means it is not written into `dependencies`
+ *   (used for plugins bundled with the extension and written straight to disk — the package is not on the npm registry, so writing it into
+ *   `dependencies` would instead make the user's later `pnpm` / `dsh plugin add` resolution fail).
  */
 async function ensureProfileDeclaration(profileDir, plugin, versionSpec) {
   const pkgFile = path.join(profileDir, 'package.json');
@@ -1551,15 +1551,15 @@ async function ensureProfileDeclaration(profileDir, plugin, versionSpec) {
   if (changed) await writeJsonFile(pkgFile, pkg);
 }
 
-/** 读取已安装插件版本；未安装返回 null。 */
+/** Read the installed plugin version; returns `null` when it is not installed. */
 async function installedPluginVersion(profileDir, plugin) {
   const pkg = await readJsonFile(path.join(profileDir, 'node_modules', plugin, 'package.json'));
   return pkg && pkg.version ? pkg.version : null;
 }
 
-/** 用 npm pack 拉取插件并解压到 profile 的 node_modules（不依赖 pnpm）。 */
+/** Fetch the plugin with `npm pack` and extract it into the profile's `node_modules` (does not rely on `pnpm`). */
 async function installPluginViaNpm(profileDir, plugin) {
-  // 安全面守卫：plugin 仅允许内置常量（npm pack/tar 的命令拼接不做通用转义）。
+  // Security guard: `plugin` may only be a bundled constant (the `npm pack`/`tar` command assembly does no general escaping).
   if (plugin !== DSH_PLUGIN_NAME) {
     throw new Error(t('installPluginViaNpm 仅支持内置插件 ') + DSH_PLUGIN_NAME);
   }
@@ -1590,16 +1590,16 @@ async function installPluginViaNpm(profileDir, plugin) {
   }
 }
 
-/** 尝试用官方 dsh plugin add 安装（依赖 dsh + pnpm）；成功返回 true。 */
+/** Try installing with the official `dsh plugin add` (requires `dsh` + `pnpm`); returns `true` on success. */
 function tryDshPluginAdd(plugin) {
-  // 安全面守卫：plugin 仅允许内置常量（win32 经 shell 拼接）。
+  // Security guard: `plugin` may only be a bundled constant (on win32 it is assembled through a shell).
   if (plugin !== DSH_PLUGIN_NAME) {
     return Promise.resolve(false);
   }
   return new Promise((resolve) => {
     const cmd = process.platform === 'win32' ? 'dsh.cmd' : 'dsh';
     const env = Object.assign({}, process.env, {
-      // npm 全局 bin 前置，避开旧 corepack shim 干扰 pnpm
+      // Prepend the npm global bin, so an old `corepack` shim cannot interfere with `pnpm`
       Path: path.join(os.homedir(), 'AppData', 'Roaming', 'npm') + path.delimiter + (process.env.Path || process.env.PATH || ''),
       npm_config_registry: NPMJS_REGISTRY
     });
@@ -1626,17 +1626,17 @@ function tryDshPluginAdd(plugin) {
 }
 
 /**
- * 生成内置兼容插件 dsh-webview-clipboard 的全部文件内容。
+ * Generate the full file contents of the bundled compatibility plugin `dsh-webview-clipboard`.
  *
- * 问题（macOS）：DSH 页面以跨源 iframe 内嵌在 VS Code webview 中时，
- * ⌘C/⌘V/⌘X 按键虽能到达页面，但浏览器的原生剪贴板默认动作在这条
- * 链路上不会发生，复制/粘贴/剪切全部失效（Windows 正常）。
+ * Problem (macOS): when the DSH page is embedded in a VS Code webview as a cross-origin iframe,
+ * the ⌘C/⌘V/⌘X keys do reach the page, but the browser's native clipboard default action does not
+ * happen along this chain, so copy/paste/cut all fail (Windows is fine).
  *
- * 修复：插件在 DSH 页面内拦截这三个键，preventDefault 后改用
- * document.execCommand('copy'/'paste'/'cut') 显式执行。其余编辑快捷键
- * （⌘A/撤销重做/光标移动/删除）原生可用，不做处理。
- * 仅在「被 Electron 内嵌 + macOS」时启用，其余环境行为不变。
- * @returns {Record<string, string>} 相对路径 → 文件内容
+ * Fix: the plugin intercepts these three keys inside the DSH page and, after `preventDefault`, runs
+ * `document.execCommand('copy'/'paste'/'cut')` explicitly. The other editing shortcuts
+ * (⌘A / undo and redo / caret movement / delete) work natively and are left alone.
+ * Enabled only when embedded in Electron on macOS; behavior in other environments is unchanged.
+ * @returns {Record<string, string>} relative path → file contents
  */
 function clipboardPluginFiles() {
   const pkgJson = JSON.stringify({
@@ -1674,8 +1674,8 @@ function clipboardPluginFiles() {
   ].join('\n');
 
   const indexJs = `// ${CLIPBOARD_PLUGIN_NAME} host half: no-op.
-// 本插件只做客户端（浏览器侧）兼容：修复 DSH 页面被 VS Code webview 内嵌时
-// macOS 上复制/粘贴等剪贴板编辑命令失效的问题。宿主侧无需任何逻辑。
+// This plugin only handles client-side (browser) compatibility: it fixes the failure of
+// clipboard editing commands such as copy/paste on macOS when the DSH page is embedded in a VS Code webview. The host half needs no logic at all.
 export const name = '${CLIPBOARD_PLUGIN_NAME}'
 
 export const inject = []
@@ -1683,15 +1683,15 @@ export const inject = []
 export function apply(_ctx) {}
 `;
 
-  // 注意：本文件内容嵌在扩展的模板字面量里，正则里的反斜杠须写成 \\\\，
-  // 否则模板字面量会把 \\/ 折叠成 / 造成注入脚本语法错误（同 buildIframeHtml 的前车之鉴）。
+  // Note: this file's contents are embedded in the extension's template literal, so backslashes in regular expressions must be written as `\\\\`,
+  // otherwise the template literal collapses `\\/` into `/`, causing a syntax error in the injected script (as happened before with `buildIframeHtml`).
   const clientJs = `// ${CLIPBOARD_PLUGIN_NAME} client bundle (ModuleLoader format)
 //
-// macOS + VS Code webview：DSH 页面以跨源 iframe 内嵌时，⌘C/⌘V/⌘X 的
-// 原生剪贴板默认动作不会发生，复制/粘贴/剪切失效（Windows 正常）。
-// 修复：拦截这三个键，preventDefault 后改用 document.execCommand 显式执行。
-// 其余编辑快捷键原生可用，不做处理，避免与编辑器自身实现冲突。
-// 仅在「被 Electron 内嵌 + macOS」时启用，其余环境行为不变。
+// macOS + VS Code webview: when the DSH page is embedded as a cross-origin iframe, the ⌘C/⌘V/⌘X
+// native clipboard default action does not happen, so copy/paste/cut fail (Windows is fine).
+// Fix: intercept these three keys and, after preventDefault, run document.execCommand explicitly.
+// The other editing shortcuts work natively and are left alone, to avoid conflicting with the editor's own implementation.
+// Enabled only when embedded in Electron on macOS; behavior in other environments is unchanged.
 
 window.__ModuleLoader__.load({ id: '${CLIPBOARD_PLUGIN_NAME}', factory: (require) => {
   var module = { exports: {} }
@@ -1717,12 +1717,12 @@ window.__ModuleLoader__.load({ id: '${CLIPBOARD_PLUGIN_NAME}', factory: (require
     return /Electron\\//.test(navigator.userAgent || '')
   }
 
-  /** 是否启用兼容层。 */
+  /** Whether the compatibility layer is enabled. */
   function enabled() {
     return inIframe() && isMac() && inElectron()
   }
 
-  /** 事件目标是否为可编辑元素（paste 只对它们有意义）。 */
+  /** Whether the event target is an editable element (paste only makes sense for those). */
   function isEditable(el) {
     if (!el || el.nodeType !== 1) return false
     var tag = el.tagName
@@ -1778,8 +1778,8 @@ window.__ModuleLoader__.load({ id: '${CLIPBOARD_PLUGIN_NAME}', factory: (require
 }
 
 /**
- * 确保内置兼容插件 dsh-webview-clipboard 已落盘并声明（不经 npm）。
- * @returns {Promise<boolean>} 本次是否发生新增/升级（true 时需重启 dsh web 生效）。
+ * Ensure the bundled compatibility plugin `dsh-webview-clipboard` is on disk and declared (not through npm).
+ * @returns {Promise<boolean>} Whether an install or upgrade happened this time (`true` means `dsh web` must be restarted to take effect).
  */
 async function ensureClipboardPlugin(profileDir) {
   try {
@@ -1795,7 +1795,7 @@ async function ensureClipboardPlugin(profileDir) {
       await fs.promises.mkdir(path.dirname(dest), { recursive: true });
       await fs.promises.writeFile(dest, files[rel], 'utf8');
     }
-    // dependencies 不写入该包（npm 注册表上没有），只登记 bundles 供 DSH 加载。
+    // The package is not written into `dependencies` (it is not on the npm registry); only `bundles` is registered so DSH loads it.
     await ensureProfileDeclaration(profileDir, CLIPBOARD_PLUGIN_NAME, null);
     return true;
   } catch (e) {
@@ -1806,8 +1806,8 @@ async function ensureClipboardPlugin(profileDir) {
 }
 
 /**
- * 确保 DSH web profile 已安装并声明 dsh-drop-caret 插件。
- * @returns {Promise<boolean>} 本次是否发生了新增/升级安装（true 时通常需重启 dsh web 生效）。
+ * Ensure the `dsh-drop-caret` plugin is installed and declared in the DSH web profile.
+ * @returns {Promise<boolean>} Whether an install or upgrade happened this time (`true` usually means `dsh web` must be restarted to take effect).
  */
 async function ensureDshPlugins() {
   const profileDir = dshWebProfileDir();
@@ -1816,9 +1816,9 @@ async function ensureDshPlugins() {
     await ensureProfileDeclaration(profileDir, DSH_PLUGIN_NAME, `^${DSH_PLUGIN_MIN}`);
     let changed = false;
     if (installed && compareVersions(installed, DSH_PLUGIN_MIN) >= 0) {
-      // dsh-drop-caret 已满足，无需安装
+      // `dsh-drop-caret` is already satisfied; no install needed
     } else {
-      // 未安装或版本过低：先试官方 dsh plugin add，失败回退 npm pack。
+      // Not installed, or the version is too low: try the official `dsh plugin add` first, and fall back to `npm pack` on failure.
       const viaCli = await tryDshPluginAdd(DSH_PLUGIN_NAME);
       if (!viaCli) {
         await installPluginViaNpm(profileDir, DSH_PLUGIN_NAME);
@@ -1826,9 +1826,9 @@ async function ensureDshPlugins() {
       await ensureProfileDeclaration(profileDir, DSH_PLUGIN_NAME, `^${DSH_PLUGIN_MIN}`);
       changed = true;
     }
-    // 内置剪贴板兼容插件（文件随扩展直接写入，不走 npm）。
-    // 仅在 macOS 的 VS Code webview 内嵌场景激活（DSH 页面本地判定），
-    // Windows/Linux 上为惰性文件；可经 dshPanel.installClipboardPlugin 关闭。
+    // Bundled clipboard compatibility plugin (files are written directly with the extension, not through npm).
+    // Active only in the macOS VS Code webview embedding scenario (decided locally by the DSH page),
+    // inert files on Windows/Linux; can be disabled via `dshPanel.installClipboardPlugin`.
     if (cfg().get('dshPanel.installClipboardPlugin', true)) {
       if (await ensureClipboardPlugin(profileDir)) {
         changed = true;
@@ -1843,8 +1843,8 @@ async function ensureDshPlugins() {
 }
 
 /**
- * 处理 webview 消息：DSH 页面内点击外部链接用系统浏览器打开；发送选中内容回执提示。
- * 侧边栏面板与编辑器标签页共用。
+ * Handle webview messages: open external links clicked inside the DSH page in the system browser, and show the Send Selection acknowledgement.
+ * Shared by the sidebar panel and the editor tab.
  * @param {any} msg
  */
 function handleWebviewMessage(msg) {
@@ -1865,9 +1865,9 @@ function handleWebviewMessage(msg) {
 }
 
 /**
- * 标签页专用显示地址：本地场景把 host 在 127.0.0.1 与 localhost 之间互换，
- * 制造与侧边栏不同的 origin，避免两个 webview 同 origin 时 DSH 前端的插件加载互斥。
- * 仅当 host 为 127.0.0.1 或 localhost 时互换；其它地址（如远程转发域名）原样返回。
+ * Tab-only display URL: in local scenarios, swap `host` between 127.0.0.1 and localhost,
+ * creating an origin different from the sidebar so two webviews on the same origin do not block each other's DSH frontend plugin loading.
+ * Swap only when `host` is 127.0.0.1 or localhost; other addresses (such as a remotely forwarded domain) are returned as-is.
  * @param {string} displayUrl
  * @returns {string}
  */
@@ -1889,13 +1889,13 @@ function getTabDisplayUrl(displayUrl) {
 }
 
 /**
- * 准备面板内容 HTML：确保 dsh 已安装、配套插件在位、服务就绪，
- * 返回 iframe HTML 或错误。侧边栏视图与编辑器标签页共用。
- * @param {boolean} [isTab] 是否为标签页模式（标签页用不同 origin 以与侧边栏隔离）。
+ * Prepare the panel content HTML: make sure `dsh` is installed, the companion plugins are in place, and the service is ready,
+ * returning the iframe HTML or an error. Shared by the sidebar view and the editor tab.
+ * @param {boolean} [isTab] Whether this is tab mode (tabs use a different origin to stay isolated from the sidebar).
  * @returns {Promise<{ok: true, html: string} | {ok: false, kind: 'not-installed'|'unreachable'|'unloadable'|'unauthorized', reason: string}>}
  */
 async function preparePanelHtml(isTab) {
-  // 先确保 dsh 已安装（远程场景即在服务器上检查/安装）。
+  // Make sure `dsh` is installed first (in remote scenarios, check/install on the server).
   const installed = await ensureDshInstalled();
   if (!installed) {
     return {
@@ -1905,10 +1905,10 @@ async function preparePanelHtml(isTab) {
     };
   }
 
-  // 自动确保 DSH 侧配套插件 dsh-drop-caret 在位（拖文件/代码段插入对话框）。
+  // Auto-ensure the DSH-side companion plugin `dsh-drop-caret` is in place (drag files/code snippets into the composer).
   const pluginInstalled = await ensureDshPlugins();
   if (pluginInstalled && (await checkUrl(getUrl()))) {
-    // 服务已在运行但插件刚装上，需重启 dsh web 才加载。
+    // The service is already running but the plugin was just installed; it only loads after `dsh web` restarts.
     vscode.window.showInformationMessage(t('已自动安装/更新 DSH 插件（dsh-drop-caret / dsh-webview-clipboard），请点击面板顶部的「重启 dsh web」使其生效。'));
   }
 
@@ -1921,10 +1921,10 @@ async function preparePanelHtml(isTab) {
     };
   }
 
-  // 服务就绪后，尽力把 VSCode 当前工作区注册进 DSH 工作区列表（不阻塞渲染）。
+  // Once the service is ready, best-effort register the current VS Code workspace in the DSH workspace list (does not block rendering).
   registerWorkspace().catch(() => {});
-  // 解析最终展示地址：本地场景走受管认证代理（无感通过 dsh web 浏览器认证）；
-  // Remote / 非回环 / 老版 dsh（无认证）维持原直连显示地址（远程场景经端口转发）。
+  // Resolve the final display URL: local scenarios go through the managed auth proxy (seamlessly passing `dsh web` browser authentication);
+  // Remote / non-loopback / old `dsh` (no authentication) keeps the original direct display URL (remote scenarios go through port forwarding).
   const target = await resolvePanelTarget(isTab);
   if (target.unauthorized) {
     maybeGuideAuth(isTab);
@@ -1937,13 +1937,13 @@ async function preparePanelHtml(isTab) {
   try {
     return { ok: true, html: buildIframeHtml(target.displayUrl, getFontScale()) };
   } catch (e) {
-    // 显示地址无法解析或协议不是 http/https 时，拒绝加载 iframe 并展示错误页。
+    // When the display URL cannot be parsed or its protocol is not http/https, refuse to load the iframe and show an error page.
     return { ok: false, kind: 'unloadable', reason: e.message };
   }
 }
 
 async function render(view) {
-  // 标签页已接管 DSH 时，侧边栏不再重复加载（避免双 webview 插件加载互斥），显示占位。
+  // When a tab has taken over DSH, the sidebar does not load it again (avoiding mutual exclusion between two webviews' plugin loading) and shows a placeholder.
   if (activeTab) {
     view.description = t('在标签页中打开');
     view.webview.html = buildSuspendedHtml();
@@ -1952,7 +1952,7 @@ async function render(view) {
   view.description = getUrl();
   view.webview.html = buildLoadingHtml();
   const r = await preparePanelHtml(false);
-  // await 期间视图可能已被关闭；只有仍是当前活动视图时才继续渲染。
+  // The view may have been closed during the `await`; continue rendering only when it is still the active view.
   if (activeView !== view) return;
   if (!r.ok) {
     view.description = r.kind === 'not-installed' ? t('未安装 dsh') : (r.kind === 'unloadable' ? t('无法加载') : t('未连接'));
@@ -1963,9 +1963,9 @@ async function render(view) {
   view.webview.html = r.html;
 }
 
-// dsh 0.1.2-rc 起把 /api RPC 端点从「点号」改为「命名空间/方法」斜杠规范
-// （如 workspace.create → workspace/create）。这里维护新旧名字映射：
-// 先请求新端点，得到 404（老版本 dsh 无此路由）时自动回退旧点号端点。
+// Since `dsh` 0.1.2-rc, the `/api` RPC endpoints changed from the "dotted" to the "namespace/method" slash convention
+// (for example `workspace.create` → `workspace/create`). The old/new name mapping is maintained here:
+// request the new endpoint first, and automatically fall back to the old dotted endpoint on a 404 (older `dsh` has no such route).
 const DSH_RPC_ENDPOINT_RENAME = {
   'workspace.create': 'workspace/create',
   'session.create': 'session/create',
@@ -1974,18 +1974,18 @@ const DSH_RPC_ENDPOINT_RENAME = {
   'session.page': 'session/page'
 };
 
-/** 响应是否为「路由不存在」（用于新旧端点回退判断）。 */
+/** Whether the response is a "route does not exist" (used to decide the new/old endpoint fallback). */
 function isRpcRouteMissing(resp) {
   return !!resp && (resp.__httpStatus === 404 || resp.raw === 'not found');
 }
 
 /**
- * 执行 DSH RPC（client-request 信封），成功返回 result.value，失败抛错。
- * 兼容两代 dsh：
- * - 新版（0.1.2-rc.x）：斜杠端点（如 workspace/create），payload 必须为
- *   「恰好一个普通对象字段」的命名参数包裹 { args: { request: <业务参数> } }；
- * - 老版本：点号端点（workspace.create），payload 即业务参数本体。
- * 先按新格式请求，路由不存在（404）时自动回退旧格式。
+ * Run a DSH RPC (the `client-request` envelope); on success return `result.value`, on failure throw.
+ * Compatible with two generations of `dsh`:
+ * - New (0.1.2-rc.x): slash endpoint (such as `workspace/create`), where `payload` must be
+ *   a named-argument wrapper with "exactly one plain object field", `{ args: { request: <actual payload> } }`;
+ * - Old versions: dotted endpoint (`workspace.create`), where `payload` is the actual payload itself.
+ * Request in the new format first, and automatically fall back to the old format when the route does not exist (404).
  * @param {string} base
  * @param {string} method
  * @param {object} payload
@@ -2027,14 +2027,14 @@ async function dshRpc(base, method, payload, timeoutMs) {
 }
 
 /**
- * 拉取 DSH 会话历史（供流式回放轮询）。
- * 新版 dsh（0.1.2-rc.x）端点改名为 session/page，入参变为
- * { address: {kind:'session', sessionId}, throughSeq, maxMessages }，其中
- * throughSeq 不可超过会话当前游标（超出时网关报 "past cursor N" 并回带 N）。
- * 这里先用 0 探测游标，再按游标取尾部一页，并归一化为旧 { events: [...] }
- * 形态；老版本 dsh 回退 session.history（{sessionId}）。
+ * Fetch DSH session history (for streaming replay polling).
+ * In new `dsh` (0.1.2-rc.x) the endpoint was renamed to `session/page`, and the arguments became
+ * `{ address: {kind:'session', sessionId}, throughSeq, maxMessages }`, where
+ * `throughSeq` cannot exceed the session's current cursor (when it does, the gateway reports "past cursor N" and returns N along with it).
+ * Here the cursor is probed with 0 first, then the trailing page is fetched by cursor and normalized to the old `{ events: [...] }`
+ * shape; old `dsh` versions fall back to `session.history` (`{sessionId}`).
  * @param {string} base
- * @param {string} sid DSH 会话 id
+ * @param {string} sid DSH session id
  * @returns {Promise<{events: any[]}>}
  */
 async function fetchSessionHistory(base, sid) {
@@ -2044,13 +2044,13 @@ async function fetchSessionHistory(base, sid) {
     maxMessages
   });
   try {
-    // 1) 游标探测：空会话返回 "past cursor -1"；非空会话 throughSeq=0 总是合法，
-    //    但为了拿到“最新游标”，这里直接解析探测错误的 cursor 值更省一轮——
-    //    因此先用一个必然越界的大值试探，从错误里解析当前游标。
+    // 1) Cursor probe: an empty session returns "past cursor -1"; for a non-empty session `throughSeq=0` is always valid,
+    //    but to get the "latest cursor", parsing the cursor value straight out of the probe error here saves one round trip—
+    //    so a value that is guaranteed to be out of range is tried first, and the current cursor is parsed from the error.
     let cursor = -1;
     try {
       await dshRpc(base, 'session.page', pagePayload(Number.MAX_SAFE_INTEGER, 1), 15000);
-      // 理论不可达（MAX_SAFE_INTEGER 必然越界）；可达时说明没有游标校验，直接按 0 取。
+      // Theoretically unreachable (`MAX_SAFE_INTEGER` is always out of range); if it is reached, there is no cursor validation, so fetch with 0 directly.
       cursor = 0;
     } catch (e) {
       const m = /past cursor (-?\d+)/.exec(String((e && e.message) || ''));
@@ -2061,12 +2061,12 @@ async function fetchSessionHistory(base, sid) {
     if (cursor < 0) {
       return { events: [] }; // 空会话
     }
-    // 2) 按游标取尾部一页（从最新事件向前回溯 maxMessages 条）。
+    // 2) Fetch the trailing page by cursor (walk back `maxMessages` events from the newest).
     const page = await dshRpc(base, 'session.page', pagePayload(cursor, 4000), 15000);
     const records = Array.isArray(page && page.records) ? page.records : [];
     return { events: records.map((x) => (x && x.event) ? x.event : x) };
   } catch (_) {
-    // 老版本 dsh：旧端点 + 旧入参。
+    // Old `dsh`: old endpoint + old arguments.
     const hist = await dshRpc(base, 'session.history', { sessionId: sid }, 15000);
     return hist;
   }
@@ -2074,13 +2074,13 @@ async function fetchSessionHistory(base, sid) {
 
 
 // =====================================================================
-// 磁盘直读：解析 VS Code 私有的 chatSessions/*.jsonl 会话文件
-// 优点：不动任何模型配置（无代理依赖），卸载扩展零残留
+// Direct disk read: parse VS Code's private `chatSessions/*.jsonl` session files
+// Upside: does not touch any model configuration (no proxy dependency), and uninstalling the extension leaves zero residue
 // =====================================================================
 
 /**
- * 解析一个会话 .jsonl 文件，回放 kind:0/kind:2 补丁。
- * 轮次结构：{ ts, agent, model, user, assistant }
+ * Parse one session `.jsonl` file, replaying `kind:0`/`kind:2` patches.
+ * Turn shape: `{ ts, agent, model, user, assistant }`
  * @param {string} filePath
  * @returns {{ sessionId: string|null, turns: any[] }}
  */
@@ -2102,12 +2102,12 @@ function parseChatSessionText(text) {
       if (!Array.isArray(state.requests)) state.requests = [];
       if (j && j.kind === 2 && Array.isArray(j.k) && j.k[0] === 'requests') {
         if (j.k.length === 1 && Array.isArray(j.v)) {
-          // k:["requests"] → 追加新请求
+          // `k:["requests"]` → append new requests
           for (const r of j.v) {
             if (r && r.requestId) state.requests.push(r);
           }
         } else if (j.k.length === 3 && typeof j.k[1] === 'number' && j.k[2] === 'response' && Array.isArray(j.v)) {
-          // k:["requests",i,"response"] → 把回复补进第 i 个请求
+          // `k:["requests",i,"response"]` → attach the answer to request i
           const idx = j.k[1];
           if (state.requests[idx]) state.requests[idx].response = j.v;
         }
@@ -2140,7 +2140,7 @@ function parseChatSessionText(text) {
 }
 
 /**
- * 同步解析一个会话 .jsonl 文件（读盘 + 解析）。
+ * Parse one session `.jsonl` file synchronously (disk read + parse).
  * @param {string} filePath
  * @returns {{sessionId: string|null, turns: any[]}}
  */
@@ -2154,8 +2154,8 @@ function parseChatSessionFile(filePath) {
 }
 
 /**
- * 异步 + 缓存的会话文件读取（mtime+size 不变则 10 秒内命中缓存）：
- * 并发聊天时避免每个请求重复全量读盘/解析，减少扩展宿主阻塞。
+ * Async + cached session-file read (cache hit within 10 seconds while `mtime`+`size` are unchanged):
+ * avoids repeating a full disk read/parse for every request during concurrent chats, reducing extension-host blocking.
  * @param {string} file
  * @returns {Promise<{sessionId: string|null, turns: any[]}|null>}
  */
@@ -2179,13 +2179,13 @@ async function readChatSessionCached(file) {
 }
 
 /**
- * 枚举 VS Code 用户数据目录（跨平台 + 远程）：
+ * Enumerate VS Code user data directories (cross-platform + remote):
  * - Windows: %APPDATA%\Code\User
  * - macOS: ~/Library/Application Support/Code/User
- * - Linux 桌面: ~/.config/Code/User
- * - vscode-server（Remote-SSH / WSL / 容器）: ~/.vscode-server/data/User
- * - 旧版 vscode-remote: ~/.vscode-remote/data/User
- * 全部候选都会尝试，不存在的自动跳过（存在性由调用方检查）。
+ * - Linux desktop: ~/.config/Code/User
+ * - vscode-server (Remote-SSH / WSL / container): ~/.vscode-server/data/User
+ * - Legacy vscode-remote: ~/.vscode-remote/data/User
+ * Every candidate is tried; non-existent ones are skipped automatically (existence is checked by the caller).
  * @returns {string[]}
  */
 function chatUserDataDirs() {
@@ -2201,8 +2201,8 @@ function chatUserDataDirs() {
 }
 
 /**
- * 从 workspace.json 的 folder 字段提取本地路径（file:/// 与 vscode-remote:// 均支持），
- * 用于判断某个 workspaceStorage 哈希目录是否属于当前工作区。
+ * Extract the local path from the `folder` field of `workspace.json` (both `file:///` and `vscode-remote://` are supported),
+ * used to decide whether a given `workspaceStorage` hash directory belongs to the current workspace.
  * @param {string} folderUri
  * @returns {string|null}
  */
@@ -2219,9 +2219,9 @@ function folderPathFromWorkspaceJson(folderUri) {
 }
 
 /**
- * 枚举最近修改的会话文件（工作区窗口 + 空窗口），当前工作区优先、其余工作区兜底。
+ * Enumerate recently modified session files (workspace windows + empty windows), with the current workspace first and other workspaces as fallback.
  * @param {number} [lookbackMinOverride]
- * @returns {{file: string, mtimeMs: number}[]} 按（当前工作区优先 →）修改时间倒序。
+ * @returns {{file: string, mtimeMs: number}[]} Sorted by (current workspace first →) modification time descending.
  */
 function listChatSessionFiles(lookbackMinOverride) {
   const out = [];
@@ -2271,17 +2271,17 @@ function listChatSessionFiles(lookbackMinOverride) {
 }
 
 // =====================================================================
-// DSH 语言模型提供方（v0.7.0）：把 DSH 注册为 VS Code 聊天模型，
-// 模型选择器中出现「DSH (DeepSeek Harness)」——选中它，VS Code 会把
-// 组织好的完整对话直接交给扩展（含 VS Code 负责的 compact），
-// 过滤杂音后转发 DSH 执行，流式回写。卸载扩展零残留。
+// DSH language model provider (v0.7.0): registers DSH as a VS Code chat model,
+// "DSH (DeepSeek Harness)" appears in the model picker—select it and VS Code hands
+// the fully assembled conversation straight to the extension (including the compact that VS Code handles),
+// which filters out the noise, forwards it to DSH for execution, and streams the result back. Uninstalling the extension leaves zero residue.
 // =====================================================================
 
 const DSH_MODEL_MAP_KEY = 'dsh.modelSessions';
 
 /**
- * 提取消息列表里第一个/最后一个/倒数第二个真实用户提问。
- * 注意：记忆块消息（【Copilot 记忆】开头）不是提问，跳过。
+ * Extract the first/last/second-to-last real user prompt in the message list.
+ * Note: memory-block messages (starting with 【Copilot 记忆】) are not prompts and are skipped.
  */
 function firstLmQuestionText(messages) {
   for (const m of messages || []) {
@@ -2333,8 +2333,8 @@ function findLmUserIndex(messages, lastUserText) {
 }
 
 /**
- * 归一化聊天文件里记录的原始用户提问（去掉 <prompt>/<userRequest>/instructions 包裹），
- * 与 lmMessageText 对 VS Code 消息的清洗规则对齐。
+ * Normalize the raw user prompt recorded in the chat file (strip the `<prompt>`/`<userRequest>`/instructions wrapper),
+ * aligned with the cleanup rules `lmMessageText` uses on VS Code messages.
  * @param {string} u
  * @returns {string}
  */
@@ -2351,11 +2351,11 @@ function normalizeFileUserText(u) {
 }
 
 /**
- * 定位当前 Copilot 聊天的 sessionId（聊天文件名）。
- * 主路径（零竞态）：当前请求落盘有几秒延迟，但「上一轮提问」早已落盘——
- * 用「文件最后一条提问（归一化）== 当前转录里的上一个提问（prevPrompt）」认领聊天文件；
- * 多个候选（多聊天同开、镜像聊天）时取「最后提问时间戳最大」者 = 最近活跃的那个聊天。
- * 兜底：首轮（无 prevPrompt）或历史被编辑时，轮询等当前请求落盘（文本全等 + ts 新鲜）。
+ * Locate the `sessionId` of the current Copilot chat (the chat file name).
+ * Main path (zero race): the current request takes a few seconds to be persisted to disk, but the previous turn's prompt was persisted long ago—
+ * claim the chat file when the file's last prompt (normalized) == the previous prompt in the current transcript (`prevPrompt`);
+ * with multiple candidates (several chats open at once, mirrored chats), take the one with the largest last-prompt timestamp = the most recently active chat.
+ * Fallback: on the first turn (no `prevPrompt`), or when the history has been edited, poll until the current request is persisted to disk (exact text match + fresh `ts`).
  * @param {string} currentPrompt
  * @param {any[]} messages
  * @returns {Promise<string|null>}
@@ -2366,11 +2366,11 @@ async function locateModelChatSessionId(currentPrompt, messages) {
   if (!q && !prevPrompt) return null;
   const FRESH_TURN_MS = 3 * 60 * 1000;
   const FRESH_EMPTY_MS = 60 * 1000;
-  // 单次扫描：宽回看（24h）+ 最近 12 文件（当前工作区优先 + mtime 倒序）。
-  // - hitPrev：文件最后一条提问（归一化）== 上一轮提问（无 ts 门控，老聊天恢复兼容）；
-  // - hitCur：文件最后一条提问 == 当前提问且 ts 新鲜（请求已落盘的快路径）；
-  // - 空聊天文件（只有 kind:0 元数据、无任何请求）：新建聊天在第一问期间就是这种状态
-  //   （实测请求在回答完成后才写入文件），记录最近 60 秒内最新的一个作为首轮候选。
+  // Single scan: wide lookback (24h) + the 12 most recent files (current workspace first + mtime descending).
+  // - `hitPrev`: the file's last prompt (normalized) == the previous turn's prompt (no `ts` gating, compatible with resuming old chats);
+  // - `hitCur`: the file's last prompt == the current prompt and `ts` is fresh (fast path when the request is already persisted to disk);
+  // - Empty chat file (only `kind:0` metadata, no requests at all): a newly created chat is in this state during its first prompt
+  //   (measured: the request is written to the file only after the answer completes), so record the newest one within the last 60 seconds as the first-turn candidate.
   const scanOnce = async () => {
     const now = Date.now();
     let bestId = null;
@@ -2404,8 +2404,8 @@ async function locateModelChatSessionId(currentPrompt, messages) {
     return { bestId, newestEmptyId };
   };
   if (prevPrompt) {
-    // 非首轮：上一轮必已落盘，通常一次命中；仍轻量重试两次覆盖「恢复很久没聊的聊天」
-    // （当前请求一落盘即可通过 hitCur 命中）。
+    // Not the first turn: the previous turn must already be persisted to disk, so one shot usually hits; still retry lightly twice to cover resuming a chat idle for a long time
+    // (the current request hits via `hitCur` as soon as it is persisted to disk).
     for (let i = 0; i < 3; i++) {
       if (i > 0) await sleep(i === 1 ? 600 : 1500);
       const { bestId } = await scanOnce();
@@ -2413,15 +2413,15 @@ async function locateModelChatSessionId(currentPrompt, messages) {
     }
     return null;
   }
-  // 首轮：不轮询等落盘（实测请求在回答完成后才写入文件，等待只会白耗约 8 秒、
-  // 拖慢新聊天第一问并造成并发聊天「串行」观感）。先试 hitCur 快路径，
-  // 再取「最近 60 秒内新建的空聊天文件」= 当前新聊天（零等待）。
+  // First turn: do not poll waiting for the disk write (measured: the request is written to the file only after the answer completes, so waiting only wastes about 8 seconds
+  // and slows down the first prompt of a new chat, giving concurrent chats a "serial" feel). Try the `hitCur` fast path first,
+  // then take "the empty chat file created within the last 60 seconds" = the current new chat (zero wait).
   const { bestId, newestEmptyId } = await scanOnce();
   return bestId || newestEmptyId || null;
 }
 
 /**
- * 构造文本响应 part（优先用官方类，兼容旧版本回落普通对象）。
+ * Build a text response part (prefer the official class, falling back to a plain object on older versions).
  * @param {string} text
  * @returns {any}
  */
@@ -2435,13 +2435,13 @@ function makeTextPart(text) {
 }
 
 /**
- * 单条消息 → 纯对话文本（过滤系统提示词/工具/环境等 harness 噪音）。
+ * One message → plain conversation text (filter out harness noise such as system prompts/tools/environment).
  * @param {any} m
  * @returns {string}
  */
 /**
- * 提取 Copilot 记忆注入块（userMemory/sessionMemory/repoMemory）的正文——
- * 这些是 Copilot 侧独有的有效记忆，只去掉 XML 包装与"空"提示，转纯文本保留。
+ * Extract the body of the Copilot memory injection blocks (`userMemory`/`sessionMemory`/`repoMemory`)—
+ * these are valid memories unique to the Copilot side; only the XML wrapper and the "empty" hints are removed, and the rest is kept as plain text.
  * @param {string} t
  * @returns {string}
  */
@@ -2451,8 +2451,8 @@ function extractMemoryBlocks(t) {
   let m;
   while ((m = re.exec(t))) {
     let inner = m[2].trim();
-    // 去掉 Copilot 的说明性引言（如 "The following are your persistent user memory notes..."），
-    // 只保留实际记忆正文（从第一个 markdown 标题开始）
+    // Drop Copilot's explanatory preamble (such as "The following are your persistent user memory notes..."),
+    // keeping only the actual memory body (starting from the first markdown heading)
     const lines = inner.split('\n');
     const headIdx = lines.findIndex((l) => /^\s*#{1,6}\s/.test(l));
     if (headIdx > 0) inner = lines.slice(headIdx).join('\n').trim();
@@ -2464,8 +2464,8 @@ function extractMemoryBlocks(t) {
 }
 
 /**
- * 剥离 VS Code 注入的垃圾块前缀（context/reminderInstructions/environment 等），
- * 保留其后的真实内容（用户提问可能混在同一条消息的尾部）。
+ * Strip the junk block prefixes injected by VS Code (`context`/`reminderInstructions`/`environment`, etc.),
+ * keeping the real content after them (the user prompt may be mixed into the tail of the same message).
  * @param {string} t
  * @returns {string}
  */
@@ -2478,7 +2478,7 @@ function stripJunkPrefix(t) {
   }
   if (idx > 0) {
     const rest = t.slice(idx).trim();
-    // 尾注本身就是 VS Code 元信息（如 "This is the state of the context..."）→ 丢弃
+    // The trailing note is itself VS Code metadata (e.g. "This is the state of the context...") → discard
     if (/^This is the state of the context/i.test(rest)) return '';
     if (rest) return rest;
   }
@@ -2486,23 +2486,23 @@ function stripJunkPrefix(t) {
 }
 
 /**
- * 解析一条「附件消息」（VS Code 把拖进聊天框的文件作为独立的 user 消息投递，
- * 整条消息形如 <attachment id="...">…文件内容…</attachment>）并提取文件路径。
- * 路径来源（按优先级）：
- *  1) 正文 filepath 注释（三种实测变体：<!-- filepath: p --> / // filepath: p / # filepath: p）；
- *  2) 开标签 filePath/path/uri 属性（file:// URI 归一化为本地路径）；
- *  3) id 属性（"file:NAME" 或 "NAME"，仅文件名——拼接当前工作区路径，找不到就原样传）。
- * 注意不能用「<attachment …>…</attachment>」内部配对正则剥离：文件内容里可能有
- * 字面 <attachment> 文本（比如拖进本扩展的源码），配对会被内容里的字面量击穿。
- * @param {string} t 整条消息文本
+ * Parse one "attachment message" (VS Code delivers a file dragged into the chat box as a separate user message,
+ * the whole message has the form <attachment id="...">…file contents…</attachment>) and extract the file path.
+ * Path sources (in priority order):
+ *  1) A filepath comment in the body (three variants observed in practice: `<!-- filepath: p -->` / `// filepath: p` / `# filepath: p`);
+ *  2) The `filePath`/`path`/`uri` attributes on the opening tag (`file://` URIs are normalized to a local path);
+ *  3) The `id` attribute ("file:NAME" or "NAME", a bare file name only — joined onto the current workspace path, passed through as-is if not found).
+ * Note: a paired regex over "<attachment …>…</attachment>" must not be used to strip: the file contents may contain
+ * literal <attachment> text (such as this extension's own source dragged in), and the pairing would be broken by the literal inside the content.
+ * @param {string} t The whole message text
  * @returns {string[]}
  */
 function stripAndExtractAttachments(t) {
   const s = String(t || '');
   const paths = [];
   const push = (p) => { if (p && !paths.includes(p)) paths.push(p); };
-  // 路径提取：优先开标签 filePath 属性（实测主格式 <attachment id=... filePath="...">），
-  // 其次正文 filepath 注释（<!-- --> / // / # 变体），最后 id 属性兜底（拼工作区）。
+  // Path extraction: prefer the `filePath` attribute on the opening tag (the main format observed in practice: <attachment id=... filePath="...">),
+  // then a filepath comment in the body (`<!-- -->` / `//` / `#` variants), and finally the `id` attribute as a fallback (joined with the workspace).
   const attrRe = /<attachment\b[^>]*\bfilePath\s*=\s*"([^"]+)"/gi;
   let m;
   while ((m = attrRe.exec(s))) push(m[1].trim());
@@ -2533,10 +2533,10 @@ function stripAndExtractAttachments(t) {
       push(name);
     }
   }
-  // 容器剥离：优先 <attachments>…</attachments>（复数包裹是 VS Code 专用，
-  // 文件内容里几乎不可能出现 </attachments>，可安全取最后一个）；
-  // 回退 <attachment>…</attachment>（首个开标签到最后一个闭标签，内容里的
-  // 字面 <attachment> 文本位于中间，不影响首尾定位）。
+  // Container stripping: prefer <attachments>…</attachments> (the plural wrapper is VS Code-only,
+  // </attachments> is almost impossible inside file contents, so taking the last one is safe);
+  // fall back to <attachment>…</attachment> (from the first opening tag to the last closing tag; literal
+  // <attachment> text in the content sits in the middle and does not affect locating the ends).
   let cleaned = s;
   const a1 = s.search(/<attachments\b/i);
   const z1 = s.lastIndexOf('</attachments>');
@@ -2553,8 +2553,8 @@ function stripAndExtractAttachments(t) {
 }
 
 /**
- * 身份键清洗：把「用户：提问」末尾的【文件引用】段截掉，
- * 让 lastLmUserText/prevLmUserText/findLmUserIndex 等身份判定只比对真实提问文本。
+ * Identity key cleanup: strip the trailing 【文件引用】 section from "用户：prompt",
+ * so identity checks such as `lastLmUserText`/`prevLmUserText`/`findLmUserIndex` compare only the real prompt text.
  * @param {string} t
  * @returns {string}
  */
@@ -2586,21 +2586,21 @@ function lmMessageText(m) {
   }
   if (!text.trim()) return '';
   if (isUser) {
-    // 环境/工作区快照消息：整条丢弃（DSH 有实时文件访问，静态快照无用；尾注也是 VS Code 元信息）
+    // Environment/workspace snapshot message: discard the whole message (DSH has live file access, so a static snapshot is useless; the trailing note is also VS Code metadata)
     if (/^\s*<(environment_info|workspace_info)>/.test(text)) return '';
-    // 文件引用处理：VS Code 把拖进聊天框的文件以 <attachments>/<attachment> 容器包裹在
-    // user 消息里（独立消息或与 <userRequest> 提问同消息两种形态均有）。统一先剥离
-    // 附件容器、提取 filePath 路径，再对剩余文本走提问解析——只透传路径不传内容。
+    // File reference handling: VS Code wraps files dragged into the chat box in <attachments>/<attachment> containers inside
+    // user messages (both forms occur: a separate message, or the same message as the <userRequest> prompt). Always strip
+    // the attachment container first, extract the `filePath` paths, then run prompt parsing on the rest — only paths pass through, never contents.
     const noInstr0 = text.replace(/<instructions>[\s\S]*?<\/instructions>/gi, '').trim();
     const { cleaned: noAttach, paths: attachPaths } = stripAndExtractAttachments(noInstr0);
     const attachSuffix = attachPaths.length ? (t('\n\n【文件引用】\n') + attachPaths.map((p) => '- ' + p).join('\n')) : '';
     if (!noAttach) {
-      // 整条消息只有附件：输出引用块（不带「用户：」前缀，身份键会自动跳过，
-      // 引用块与其后真正的问题消息一起序列化发给 DSH）
+      // The whole message is attachments only: emit a reference block (no "用户：" prefix; identity keys skip it automatically,
+      // and the reference block is serialized to DSH together with the real question message that follows)
       return attachPaths.length ? (t('【文件引用】\n') + attachPaths.map((p) => '- ' + p).join('\n')) : '';
     }
     text = noAttach; // 后续解析都基于剥离附件后的文本，文件内容绝不透传
-    // 保留 Copilot 独有记忆（userMemory/sessionMemory/repoMemory 的正文，去掉 XML 包装）
+    // Keep Copilot-only memory (the body of userMemory/sessionMemory/repoMemory, with the XML wrapper removed)
     const memText = extractMemoryBlocks(text);
     if (memText) {
       const rest = text.replace(/<(userMemory|sessionMemory|repoMemory)>\s*[\s\S]*?\s*<\/\1>/g, '').trim();
@@ -2610,11 +2610,11 @@ function lmMessageText(m) {
       }
       return t('【Copilot 记忆】\n') + memText + attachSuffix;
     }
-    // 优先提取 <userRequest> / <prompt> 内的真实提问（VS Code 会把提问包在 <prompt> 里，
-    // 前面是 instructions/AGENTS.md 等上下文——只保留提问本身，避免污染会话与身份键）
+    // Prefer extracting the real prompt inside <userRequest> / <prompt> (VS Code wraps the prompt in <prompt>,
+    // with context such as instructions/AGENTS.md in front — keep only the prompt itself to avoid polluting the session and identity keys)
     const inner = extractUserRequest(text);
     if (inner !== null) return t('用户：') + inner + attachSuffix;
-    // 剥掉 Copilot instructions 前置说明与 <instructions> 块后，若还有真实内容则继续
+    // After stripping the Copilot instructions preamble and the <instructions> block, continue if real content is left
     const cleaned = stripCopilotContext(text);
     if (cleaned !== text) {
       if (!cleaned) return ''; // 纯 instructions/上下文 → 丢弃
@@ -2622,7 +2622,7 @@ function lmMessageText(m) {
       const inner2 = extractUserRequest(text);
       if (inner2 !== null) return t('用户：') + inner2 + attachSuffix;
     }
-    // 垃圾块开头：剥离前缀保留尾部真实内容，而不是整条丢弃
+    // Junk block at the start: strip the prefix and keep the real content at the tail, rather than discarding the whole message
     if (isJunkUserText(text)) {
       const stripped = stripJunkPrefix(text);
       if (stripped) return t('用户：') + stripped + attachSuffix;
@@ -2630,8 +2630,8 @@ function lmMessageText(m) {
     }
     return t('用户：') + text + attachSuffix;
   }
-  // 助手消息：剥掉我们上一轮发出的「⏳ 已提交给 DeepSeek Harness…」占位前缀，
-  // 避免它作为对话上下文回传给 DSH（保留其后真正的回答内容）
+  // Assistant message: strip the "⏳ 已提交给 DeepSeek Harness…" placeholder prefix we emitted in the previous turn,
+  // so it is not passed back to DSH as conversation context (the real answer content after it is kept)
   {
     const marker = DSH_ANSWER_MARKER;
     const mi = text.indexOf(marker);
@@ -2644,8 +2644,8 @@ function lmMessageText(m) {
       }
     }
   }
-  // 助手消息里的 VS Code 注入块（<system-reminder> 等）：剥离前缀只留回答正文，
-  // 避免 system 提示词作为「已答内容」重复回传给 DSH
+  // VS Code-injected blocks in assistant messages (<system-reminder>, etc.): strip the prefix and keep only the answer body,
+  // so system prompts are not passed back to DSH again as "already answered" content
   {
     const sm = text.match(/<system-reminder>[\s\S]*?<\/system-reminder>\s*/i);
     if (sm) text = text.replace(sm[0], '');
@@ -2654,11 +2654,11 @@ function lmMessageText(m) {
   return t('助手：') + text;
 }
 
-/** DSH 答案在 VS Code 转录里的产地标记（流式回写时作为首段文本）。 */
+/** The provenance marker for DSH answers in the VS Code transcript (emitted as the first text segment when streaming back). */
 const DSH_ANSWER_MARKER = t('⏳ 已提交给 DeepSeek Harness');
 
 /**
- * 提取单条消息的原始文本（不做任何清洗），用于产地标记检测。
+ * Extract the raw text of a single message (no cleanup at all), for provenance marker detection.
  * @param {any} m
  * @returns {string}
  */
@@ -2684,7 +2684,7 @@ function lmRawText(m) {
 }
 
 /**
- * 判断一条消息是否为 DSH 自己产出的回答（带 ⏳ 产地标记的 assistant 消息）。
+ * Tell whether a message is an answer produced by DSH itself (an assistant message carrying the ⏳ provenance marker).
  * @param {any} m
  * @returns {boolean}
  */
@@ -2696,19 +2696,19 @@ function isDshProducedAnswer(m) {
 }
 
 /**
- * 找到 messages 里最后一条「DSH 已知」消息的下标（边界）。
- * - 主信号：最后一条带 ⏳ 产地标记的 assistant（DSH 自己流式产出的答案），最可靠；
- * - 辅信号（无标记时兜底）：lastUserText 对应的用户提问，紧邻其后的 assistant 即 DSH 同轮答案；
- * 找不到返回 -1。
- * 边界之后 = 切走期间其他模型的问答（外来段）+ 当前提问，是 DSH 唯一需要接收的增量。
+ * Find the index (boundary) of the last "DSH-known" message in `messages`.
+ * - Primary signal: the last assistant carrying the ⏳ provenance marker (an answer DSH streamed out itself), the most reliable;
+ * - Secondary signal (fallback when there is no marker): the user prompt matching `lastUserText`; the assistant immediately after it is DSH's answer for the same turn;
+ * Returns -1 if not found.
+ * After the boundary = other models' Q&A while switched away (foreign segment) + the current prompt; this is the only increment DSH needs to receive.
  */
 function findDshKnownBoundary(messages, lastUserText) {
   for (let i = (messages || []).length - 1; i >= 0; i--) {
     if (isDshProducedAnswer(messages[i])) return i;
   }
-  // 辅信号（无 ⏳ 标记时兜底）：从末尾扫描所有与 lastUserText 同文本的提问，
-  // 取第一个「其后紧跟 assistant」的——支持用户重复提问同一文本的场景
-  //（最后一次提问尚无答案，会被跳过，取上一组问答的答案为边界）。
+  // Secondary signal (fallback when there is no ⏳ marker): scan from the end for every prompt whose text matches `lastUserText`,
+  // and take the first one immediately followed by an assistant — this supports the user asking the same text again
+  // (the last prompt has no answer yet and is skipped, so the answer of the previous Q&A pair becomes the boundary).
   if (lastUserText) {
     for (let i = (messages || []).length - 1; i >= 0; i--) {
       const m = messages[i];
@@ -2730,9 +2730,9 @@ function findDshKnownBoundary(messages, lastUserText) {
 }
 
 /**
- * 把 VS Code 交给模型的消息列表序列化为纯对话文本。
+ * Serialize the message list VS Code hands to the model into plain conversation text.
  * @param {any[]} messages
- * @param {{markForeignAssistant?: boolean}} [opts] markForeignAssistant=true 时给外来 assistant 打产地标签
+ * @param {{markForeignAssistant?: boolean}} [opts] When `markForeignAssistant=true`, tag foreign assistant messages with the provenance marker
  * @returns {string}
  */
 function serializeLmMessages(messages, opts) {
@@ -2743,7 +2743,7 @@ function serializeLmMessages(messages, opts) {
     const s = lmMessageText(m);
     if (!s) continue;
     if (s.startsWith(t('【文件引用】'))) {
-      // 引用块消息：跨消息去重——VS Code 会把同一文件以 active file 与附件各传一次
+      // Reference block message: cross-message de-duplication — VS Code sends the same file once as the active file and once as an attachment
       if (emittedBlocks.has(s)) continue;
       emittedBlocks.add(s);
       out.push(s);
@@ -2759,8 +2759,8 @@ function serializeLmMessages(messages, opts) {
 }
 
 /**
- * 识别 VS Code 的 UI 辅助合成请求（进度文案/标题生成等），返回 { kind, count, scenario, titleSeed } 或 null。
- * 这些请求不是用户提问，不应转发给 DSH。
+ * Detect VS Code's UI-helper synthetic requests (progress text/title generation, etc.), returning { kind, count, scenario, titleSeed } or null.
+ * These requests are not user prompts and must not be forwarded to DSH.
  * @param {any[]} messages
  * @returns {any|null}
  */
@@ -2783,9 +2783,9 @@ const SYNTHETIC_PROGRESS_TEXTS = {
 };
 
 /**
- * 回放/等待 DSH 会话当前轮的回答到本次 provider 调用（去重场景专用）：
- * 同一提问被 VS Code 重复投递时，不新建会话、不重复提交 prompt，只把已有/正在产出的回答
- * 再流式给本调用，保证「裸提问」与「带上下文」两次调用都能拿到答案。
+ * Replay/wait for the current turn's answer of the DSH session into this provider call (for the de-duplication case only):
+ * when VS Code delivers the same prompt twice, do not create a session and do not submit the prompt again; just
+ * stream the existing/in-progress answer to this call again, so that both the "bare prompt" and the "with context" calls get an answer.
  */
 async function replayDshAnswer(base, sid, timeoutMs, progress, token) {
   const deadline = Date.now() + timeoutMs;
@@ -2835,7 +2835,7 @@ async function replayDshAnswer(base, sid, timeoutMs, progress, token) {
 }
 
 /**
- * dsh 语言模型提供方的请求处理。
+ * Request handling for the dsh language model provider.
  * @param {any[]} messages
  * @param {any} progress Progress<LanguageModelResponsePart>
  * @param {any} token CancellationToken
@@ -2843,13 +2843,13 @@ async function replayDshAnswer(base, sid, timeoutMs, progress, token) {
  */
 async function handleDshModelRequest(model, messages, options, progress, token) {
   const base = await apiBase();
-  // 解析模型选择：dsh-deepseek-* 固定映射 DeepSeek 官方模型；dsh 条目跟随 VS Code 配置
+  // Resolve the model selection: `dsh-deepseek-*` maps to fixed DeepSeek official models; the `dsh` entry follows the VS Code configuration
   const fixed = resolveDshModelSelection((model && model.id) || 'dsh');
   const provider = fixed ? fixed.provider : cfg().get('dshPanel.chatProvider', '');
   const chatModel = fixed ? fixed.model : cfg().get('dshPanel.chatModel', '');
-  // 推理档位：VS Code 界面选择（options.modelConfiguration.reasoningEffort）优先，
-  // 其次 dshPanel.dshReasoningEffort 配置兜底，最后跟随 DSH 默认。
-  // 映射：none/off → off；low/high/max 直通（DSH 实测支持值）；其余忽略。
+  // Reasoning effort: the VS Code UI selection (options.modelConfiguration.reasoningEffort) takes priority,
+  // then the dshPanel.dshReasoningEffort setting as a fallback, and finally the DSH default.
+  // Mapping: none/off → off; low/high/max pass through (values observed to be supported by DSH); everything else is ignored.
   const DSH_EFFORTS = ['off', 'low', 'high', 'max'];
   const EFFORT_MAP = { none: 'off', off: 'off', low: 'low', high: 'high', max: 'max' };
   const uiEffort = String((options && (options.modelConfiguration || {}).reasoningEffort) || (options && (options.configuration || {}).reasoningEffort) || '');
@@ -2859,11 +2859,11 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
   const displayModel = fixed ? fixed.model : (chatModel || t('DSH 默认模型'));
   const selectionKey = provider && chatModel ? (provider + '/' + chatModel + (effort ? '/' + effort : '')) : '';
   const currentPrompt = lastLmUserText(messages);
-  // 提前并行定位当前聊天 sessionId（聊天文件名）：落盘有几秒竞态，
-  // 提前开始轮询可把等待藏在 DSH 就绪检查之后，不拖慢首答。
+  // Locate the current chat sessionId (the chat file name) in parallel up front: persisting to disk has a race of a few seconds,
+  // and polling early hides the wait behind the DSH readiness check without slowing the first answer.
   const sessionIdPromise = currentPrompt ? locateModelChatSessionId(currentPrompt, messages) : Promise.resolve(null);
   try {
-    // 合成请求（VS Code UI 辅助）：本地秒答，不转发 DSH、不建 DSH 会话
+    // Synthetic request (VS Code UI helper): answered instantly and locally, not forwarded to DSH and no DSH session created
     const synthetic = detectSyntheticRequest(messages);
     if (synthetic) {
       if (synthetic.kind === 'progress') {
@@ -2891,7 +2891,7 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
 
     const fullConvText = serializeLmMessages(messages);
 
-    // 调试捕获：把 VS Code 交给模型的消息结构原样落盘（排查序列化问题用）
+    // Debug capture: persist the message structure VS Code hands to the model to disk verbatim (for troubleshooting serialization issues)
     if (cfg().get('dshPanel.debugModelMessages', false)) {
       try {
         const debugDir = path.join(getWorkspaceDir(), '.dsh-debug');
@@ -2951,9 +2951,9 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
       }
     }
 
-    // 聊天身份 → DSH 会话映射：直接以 Copilot 聊天文件名（sessionId）为键——
-    // 每个聊天唯一且稳定，一聊天对应一个 DSH 会话；仅当请求迟迟未落盘（极罕见）
-    // 才退到首问哈希兜底（仅供同题二次投递去重，转录校验防撞）。
+    // Chat identity → DSH session mapping: key directly on the Copilot chat file name (sessionId) —
+    // each chat is unique and stable, one chat maps to one DSH session; only when the request is slow to be persisted to disk (very rare)
+    // does it fall back to the first-question hash (only for de-duplicating a second delivery of the same question, with transcript validation against collisions).
     const workspacePath = getWorkspaceDir();
     const map = Object.assign({}, gContext.globalState.get(DSH_MODEL_MAP_KEY) || {});
     const diskId = await sessionIdPromise;
@@ -2963,11 +2963,11 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
     const FRESH_MS = 15 * 60 * 1000;
     const entryFresh = (e, ms) => e && typeof e.lastUsedAt === 'number' && (Date.now() - e.lastUsedAt) < (ms || FRESH_MS);
     let entry = map[chatKey];
-    // 直接命中校验（防串线）：同一聊天的转录里必然还留着「上次已发提问」；
-    // 找不到说明键撞车（别的聊天/旧聊天）→ 视作无条目（宁可新建，不可串线）。
-    // 首轮（无上一个提问）无法用转录校验，只能靠「同题 + 60 秒内活跃」判定是否为
-    // 同一提问的二次投递（VS Code 裸提问/带上下文两次调用相隔仅数秒）；
-    // 超过 60 秒视为别的聊天撞题 → 新建会话。
+    // Direct-hit validation (guards against crossed sessions): the same chat's transcript must still contain the "last sent prompt";
+    // if it is not found, the key collided (another chat/old chat) → treat it as no entry (better to create a new session than to cross sessions).
+    // The first turn (no previous prompt) cannot use transcript validation, so it can only judge by "same question + active within 60 seconds" whether this is
+    // a second delivery of the same prompt (VS Code's bare-prompt and with-context calls are only seconds apart);
+    // beyond 60 seconds it is treated as another chat hitting the same question → create a new session.
     if (entry && entry.dshSessionId && entry.workspacePath === workspacePath) {
       const prevPrompt = prevLmUserText(messages);
       const isSameChat = prevPrompt
@@ -2975,15 +2975,15 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
         : (entry.lastUserText === currentPrompt && entryFresh(entry, 60 * 1000));
       if (!isSameChat) entry = null;
     }
-    // 兜底找回：极少数「请求迟迟未落盘 → 上一轮走了哈希键、本轮才拿到 sessionId 键」的情况，
-    // 在映射表里找回属于同一聊天的条目（sessionId 直接映射下的安全网）。
+    // Fallback recovery: for the rare case where "the request was slow to be persisted to disk → the previous turn used the hash key and only this turn obtained the sessionId key",
+    // find the entry belonging to the same chat in the mapping table (a safety net under the direct sessionId mapping).
     if (!entry || !entry.dshSessionId || entry.workspacePath !== workspacePath) {
       const prevPrompt = prevLmUserText(messages);
       if (prevPrompt) {
-        // 非首轮转录找回：在所有同工作区、15 分钟内活跃的条目里，找「记录的上个提问仍出现在
-        // 当前转录中」的候选，优先选出现位置最靠后的（最接近当前提问 → 最可能是同一条对话）。
-        // 注意不能锚定 prevPrompt：切到其它模型后，紧邻的上一个提问是别的模型答的，
-        // 而条目记录的是最后一次 DSH 提问，两者未必相同（第二次切回时的断链根因）。
+        // Non-first-turn transcript recovery: among all entries in the same workspace active within 15 minutes, find candidates whose "recorded previous prompt still appears
+        // in the current transcript", preferring the one that appears latest (closest to the current prompt → most likely the same conversation).
+        // Note that prevPrompt cannot be used as an anchor: after switching to another model, the immediately preceding prompt was answered by another model,
+        // while the entry records the last DSH prompt; the two are not necessarily the same (the root cause of the broken link on the second switch back).
         let best = null;
         let bestIdx = -1;
         for (const k of Object.keys(map)) {
@@ -2997,7 +2997,7 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
           map[chatKey] = best; // 登记到当前键下，后续保持一致
         }
       } else {
-        // 首轮：只允许 60 秒内的同题合并（VS Code 裸提问/带上下文两次调用相隔数秒）
+        // First turn: only merge the same question within 60 seconds (VS Code's bare-prompt and with-context calls are only seconds apart)
         for (const k of Object.keys(map)) {
           const e = map[k];
           if (e && e.dshSessionId && e.workspacePath === workspacePath
@@ -3009,10 +3009,10 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
         }
       }
     }
-    // 当前提问（最后一条用户消息）的附件签名：引用变化说明带来了新文件，
-    // 不属于「同一提问的重复投递」，必须放行发送（否则新拖的文件永远发不出去）。
-    // 只取最后一条用户消息——裸提问/带上下文两次投递的 history 序列化可能不同，
-    // 全对话拼接会误伤去重（此前 v0.8.30 的教训）。
+    // Attachment signature of the current prompt (the last user message): a change in references means new files were brought in,
+    // which is not a "duplicate delivery of the same prompt", so it must be let through (otherwise newly dragged files could never be sent out).
+    // Take only the last user message — the serialized history of the bare-prompt and with-context deliveries may differ,
+    // and concatenating the whole conversation would wrongly break de-duplication (a lesson from v0.8.30).
     let currentAttachSig = '';
     for (let i = (messages || []).length - 1; i >= 0; i--) {
       const mm = messages[i];
@@ -3025,9 +3025,9 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
         break;
       }
     }
-    // 去重：VS Code 会把同一次提问投递两次（「裸提问」+「instructions+<prompt>提问」），
-    // 归一化后 currentPrompt 相同且附件签名一致；此时若该会话已有进行中/已完成的同题
-    // 回合（20 秒内），直接回放答案，避免 DSH 出现两个会话或同题重复提交。
+    // De-duplication: VS Code delivers the same prompt twice ("bare prompt" + "instructions+<prompt> prompt"),
+    // after normalization currentPrompt is the same and the attachment signature matches; if the session already has an in-progress/completed turn for the same question
+    // (within 20 seconds), replay the answer directly, avoiding two DSH sessions or a duplicate submission of the same question.
     if (entry && entry.dshSessionId && entry.workspacePath === workspacePath
       && entry.lastUserText === currentPrompt
       && (entry.lastAttachSig || '') === currentAttachSig
@@ -3041,27 +3041,27 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
     let isNewSession = false;
     if (entry && entry.dshSessionId && entry.workspacePath === workspacePath) {
       sid = entry.dshSessionId;
-      // 增量（方案A）：定位最后一条「DSH 已知」消息的边界，只发其后的内容——
-      // DSH 自己答过的轮次由 DSH 会话回放、不回传（省 token）；
-      // 切走期间其他模型的问答（外来段）+ 当前提问是 DSH 唯一缺失的信息，补发并打产地标签。
+      // Increment (option A): locate the boundary of the last "DSH-known" message and send only what follows it —
+      // turns DSH already answered are replayed by the DSH session and not sent back (saves tokens);
+      // other models' Q&A while switched away (foreign segment) + the current prompt are the only information DSH is missing; send them and tag them with the provenance marker.
       const boundary = findDshKnownBoundary(messages, entry.lastUserText);
       if (boundary >= 0) {
         const delta = serializeLmMessages((messages || []).slice(boundary + 1), { markForeignAssistant: cfg().get('dshPanel.markForeignAssistant', true) });
         if (delta.trim()) taskText = delta;
       } else {
-        // 兜底：找不到产地标记（历史被编辑等）→ 退化为「上次已发提问之后」的增量
+        // Fallback: no provenance marker found (history edited, etc.) → degrade to the increment after the "last sent prompt"
         const idx = findLmUserIndex(messages, entry.lastUserText);
         if (idx >= 0) {
           const delta = serializeLmMessages((messages || []).slice(idx + 1));
           if (delta.trim()) taskText = delta;
         }
       }
-      // 模型/档位切换：与上次选择不一致时重新 selectModel（同一聊天保持同一 DSH 会话）
+      // Model/effort switch: call selectModel again when it differs from the previous selection (the same chat keeps the same DSH session)
       if (selectionKey && entry.selection !== selectionKey) {
         await selectModelForSession(base, sid, provider, chatModel, effort);
         entry.selection = selectionKey;
       }
-      // 找不到上次提问（消息被编辑等）则用全量（重复但正确）
+      // If the previous prompt cannot be found (messages edited, etc.), use the full text (redundant but correct)
     } else {
       const createPayload = { cwd: workspacePath };
       const preset = cfg().get('dshPanel.chatAgentPreset', '');
@@ -3083,7 +3083,7 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
     entry.lastUsedAt = Date.now();
     await gContext.globalState.update(DSH_MODEL_MAP_KEY, map);
     if (!taskText.trim()) taskText = t('用户：') + currentPrompt;
-    // 先取事件游标（必须在提交任务之前，避免把 turn/start 一并吃掉导致流式判定失效）
+    // Take the event cursor first (must be before submitting the task, so that turn/start is not consumed along with it and streaming detection does not break)
     const timeoutMs = Number(cfg().get('dshPanel.chatTimeoutMs', 900000)) || 900000;
     const deadline = Date.now() + timeoutMs;
     let lastSeq = 0;
@@ -3160,7 +3160,7 @@ async function handleDshModelRequest(model, messages, options, progress, token) 
 }
 
 /**
- * 解析 DSH 模型条目 → DeepSeek 官方固定选择；'dsh' 条目返回 null（跟随 VS Code 配置）。
+ * Resolve a DSH model entry → fixed DeepSeek official selection; the 'dsh' entry returns null (follows VS Code configuration).
  * @param {string} modelId
  * @returns {{provider: string, model: string} | null}
  */
@@ -3172,7 +3172,7 @@ function resolveDshModelSelection(modelId) {
 }
 
 /**
- * 为 DSH 会话选择模型（含可选推理档位）；失败静默回退 DSH 默认。
+ * Select the model for a DSH session (with optional reasoning effort); on failure, silently fall back to the DSH default.
  * @param {string} base
  * @param {string} sid
  * @param {string} provider
@@ -3192,7 +3192,7 @@ async function selectModelForSession(base, sid, provider, chatModel, effort) {
 }
 
 /**
- * 注册 dsh 语言模型提供方（VS Code 1.94+，vscode.lm）。
+ * Register the dsh language model provider (VS Code 1.94+, `vscode.lm`).
  * @param {import('vscode').ExtensionContext} context
  */
 function registerDshModelProvider(context) {
@@ -3202,13 +3202,13 @@ function registerDshModelProvider(context) {
   }
   if (!cfg().get('dshPanel.enableDshModel', true)) return;
   try {
-    // 关键（借鉴 vizards.deepseek-v4-for-copilot）：提供 onDidChangeLanguageModelChatInformation
-    // 事件，并在注册后触发一次——VS Code 会缓存模型信息，若不触发变更事件，
-    // 缓存里可能是不含 configurationSchema 的旧数据，导致「推理档位」UI 不渲染。
+    // Key (borrowed from vizards.deepseek-v4-for-copilot): provide `onDidChangeLanguageModelChatInformation`
+    // event, and fire it once after registration — VS Code caches model information, and if no change event fires,
+    // the cache may hold stale data without `configurationSchema`, so the "reasoning effort" UI does not render.
     const dshModelEmitter = new vscode.EventEmitter();
-    // 与 vizards.deepseek-v4-for-copilot 对齐：VS Code 核心依据 provider 返回的
-    // languageModelChatInformation 顶级字段渲染「推理档位」配置 pill。成本用合法货币串
-    // （避免 '—' 这类非法值），reasoningEffort 属性带 group:'navigation'。
+    // Aligned with vizards.deepseek-v4-for-copilot: the VS Code core renders the "reasoning effort" config pill from the
+    // top-level `languageModelChatInformation` fields returned by the provider. Cost uses a valid currency string
+    // (to avoid illegal values like '—'), and the `reasoningEffort` property carries `group:'navigation'`.
     const dshModelDefs = [
       { id: 'dsh', name: 'DSH (DeepSeek Harness)', detail: t('默认：跟随 DSH 设置模型 · 档位可配'),
         cost: { inputCost: '$0.14', outputCost: '$0.28', cacheCost: '$0.0028' } },
@@ -3245,20 +3245,20 @@ function registerDshModelProvider(context) {
           tooltip: t('DeepSeek Harness：在工作区解析任务、执行工具后解答；模型与推理档位可配置'),
           maxInputTokens: 250000,
           maxOutputTokens: 128000,
-          // 门控字段（对齐 vizards：isBYOK/isUserSelectable 让模型可被选、可配置）
+          // Gating fields (aligned with vizards: `isBYOK`/`isUserSelectable` make the model selectable and configurable)
           isBYOK: true,
           isUserSelectable: true,
-          // toolCalling 声明为 true：Agent 模式的模型选择器只列出支持工具的模型。
-          // DSH 用自己的工具执行，VS Code 传入的工具（options.tools）一律忽略、不返回工具调用，无冲突。
+          // `toolCalling` declared true: Agent mode's model picker lists only models that support tools.
+          // DSH uses its own tool execution; tools passed in by VS Code (`options.tools`) are always ignored and no tool calls are returned — no conflict.
           capabilities: { toolCalling: true, imageInput: false },
-          // 成本信息（对齐 vizards toModelCostInfo 字段，用合法货币串以免核心解析异常）
+          // Cost info (aligned with vizards `toModelCostInfo` fields; valid currency strings to avoid core parse errors)
           priceCategory: 'low',
           ...m.cost,
-          // 模型配置 schema：让 VS Code 在模型选择器里显示「推理档位」下拉，
-          // 用户选中值经 options.modelConfiguration.reasoningEffort 传回 provider。
+          // Model configuration schema: lets VS Code show the "reasoning effort" dropdown in the model picker,
+          // and the value the user selects is passed back to the provider via `options.modelConfiguration.reasoningEffort`.
           configurationSchema: { properties: { reasoningEffort: dshReasoningEffortSchema } }
         }));
-        // 落盘实际返回的 provider info，便于确认 configurationSchema 是否传给 VS Code。
+        // Write the provider info actually returned to disk, to confirm whether `configurationSchema` is passed to VS Code.
         try {
           const dbgDir = path.join(os.homedir(), '.dsh-debug');
           fs.mkdirSync(dbgDir, { recursive: true });
@@ -3275,8 +3275,8 @@ function registerDshModelProvider(context) {
       }
     };
     context.subscriptions.push(vscode.lm.registerLanguageModelChatProvider('dsh', provider));
-    // ① 激活 Copilot Chat（若已安装），确保模型信息的实时监听器存在；
-    // ② 多次触发变更事件 + 主动 selectChatModels 强制重查，覆盖核心/聊天扩展的模型缓存。
+    // 1) Activate Copilot Chat (if installed) to ensure the live listener for model information exists;
+    // 2) Fire the change event multiple times + actively call `selectChatModels` to force a re-query, covering the core/chat extension model caches.
     try {
       const copilotChat = vscode.extensions.getExtension('github.copilot-chat');
       if (copilotChat) {
@@ -3298,11 +3298,11 @@ function registerDshModelProvider(context) {
 }
 
 /**
- * 诊断：列出 VS Code 语言模型注册表里的模型及其 metadata（含 configurationSchema 是否存在），
- * 与 vizards（vendor=deepseek）对比，用于定位「推理档位」UI 不渲染的原因。
+ * Diagnostic: list the models in the VS Code language model registry and their metadata (including whether `configurationSchema` exists),
+ * compared with vizards (`vendor=deepseek`), to locate the reason the "reasoning effort" UI does not render.
  */
 async function diagnoseModels() {
-  // 固定输出到用户主目录（不依赖当前工作区，保证一定可找到）
+  // Always write to the user home directory (independent of the current workspace, so it can always be found)
   const debugDir = path.join(os.homedir(), '.dsh-debug');
   try {
     fs.mkdirSync(debugDir, { recursive: true });
@@ -3343,7 +3343,7 @@ async function diagnoseModels() {
 }
 
 /**
- * 「DSH 状态」诊断命令：报告模型提供方注册情况、DSH 连通性与当前模型配置。
+ * The "DSH Status" diagnostic command: reports model provider registration, DSH reachability, and the current model configuration.
  */
 async function showChatStatus() {
   const reachable = await checkUrl(getUrl());
@@ -3363,7 +3363,7 @@ async function showChatStatus() {
 }
 
 /**
- * 生成认证状态的诊断文本（「DSH 状态」命令用）。
+ * Produce the diagnostic text for the auth status (used by the "DSH Status" command).
  * @returns {Promise<string>}
  */
 async function authStatusText() {
@@ -3405,15 +3405,15 @@ function activate(context) {
 
       render(view);
 
-      // DSH 页面（iframe）内点击外部链接时，由 dsh-open-links 插件通过
-      // postMessage 逐级转发到这里，用系统默认浏览器打开。
+      // When an external link is clicked inside the DSH page (iframe), the dsh-open-links plugin forwards it
+      // hop by hop via `postMessage` to here, and it is opened in the system default browser.
       view.webview.onDidReceiveMessage(handleWebviewMessage);
 
       const cfgSub = vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('dshPanel')) {
           render(view);
         } else if (e.affectsConfiguration('editor.fontSize')) {
-          // 仅字号变化时不重载 iframe（避免打断当前对话），只推送新的缩放值。
+          // On a font-size-only change, do not reload the iframe (to avoid interrupting the current conversation); only push the new scale value.
           view.webview.postMessage({ type: 'dsh-font-scale', scale: getFontScale() });
         }
       });
@@ -3431,14 +3431,14 @@ function activate(context) {
     webviewOptions: { retainContextWhenHidden: true }
   });
 
-  // 编辑器标签页模式：在编辑器区域以标签页打开 DSH（页面宽度最大化、可右键 Pin 住）。
-  // 复用侧边栏的渲染与消息逻辑，单例：已打开则聚焦，未打开则新建。
+  // Editor tab mode: open DSH as a tab in the editor area (maximizes page width, can be pinned via right-click).
+  // Reuses the sidebar's render and message logic; a singleton: focus it if already open, otherwise create it.
   const openInTabCmd = vscode.commands.registerCommand('dshPanel.openInTab', async () => {
     if (activeTab) {
       activeTab.reveal();
       return;
     }
-    // 在当前活跃编辑器所在的列打开（不另开一栏）；无活跃编辑器时用第一列。
+    // Open in the column where the currently active editor is (do not open another column); use the first column when there is no active editor.
     const column = (vscode.window.activeTextEditor && vscode.window.activeTextEditor.viewColumn) || vscode.ViewColumn.One;
     const panel = vscode.window.createWebviewPanel(
       'dsh.tab',
@@ -3447,7 +3447,7 @@ function activate(context) {
       { enableScripts: true, retainContextWhenHidden: true }
     );
     activeTab = panel;
-    // 标签页接管 DSH：侧边栏若已打开则改为占位，避免双 webview 同时加载 DSH 互斥。
+    // The tab takes over DSH: if the sidebar is already open, switch it to a placeholder, avoiding two webviews loading DSH at the same time (mutually exclusive).
     if (activeView) {
       activeView.description = t('在标签页中打开');
       activeView.webview.html = buildSuspendedHtml();
@@ -3473,7 +3473,7 @@ function activate(context) {
       if (e.affectsConfiguration('dshPanel')) {
         reloadTab();
       } else if (e.affectsConfiguration('editor.fontSize')) {
-        // 仅字号变化时不重载 iframe（避免打断当前对话），只推送新的缩放值。
+        // On a font-size-only change, do not reload the iframe (to avoid interrupting the current conversation); only push the new scale value.
         panel.webview.postMessage({ type: 'dsh-font-scale', scale: getFontScale() });
       }
     });
@@ -3483,7 +3483,7 @@ function activate(context) {
       cfgSub.dispose();
       if (activeTab === panel) activeTab = null;
       if (tabReloadFn === reloadTab) tabReloadFn = null;
-      // 标签页关闭后，恢复侧边栏（若侧边栏仍存在）。
+      // After the tab is closed, restore the sidebar (if the sidebar still exists).
       if (activeView) {
         render(activeView);
       }
@@ -3495,8 +3495,8 @@ function activate(context) {
 
   const refreshCmd = vscode.commands.registerCommand('dshPanel.refresh', () => {
     if (activeView) {
-      // 始终重载面板页面：render 会重建 iframe 重新加载 DSH Web GUI；
-      // 服务在线时 ensureRunningOnce 仅复用不重启，不影响 dsh web 进程与运行中的任务。
+      // Always reload the panel page: `render` rebuilds the iframe and reloads the DSH Web GUI;
+      // when the service is online, `ensureRunningOnce` only reuses it and does not restart, so the dsh web process and running tasks are unaffected.
       render(activeView);
     } else {
       vscode.window.showInformationMessage(t('DeepSeek Harness 面板尚未打开，请先点击侧边栏图标。'));
@@ -3504,8 +3504,8 @@ function activate(context) {
   });
 
   const openBrowserCmd = vscode.commands.registerCommand('dshPanel.openInBrowser', async () => {
-    // 新版 dsh web 有浏览器认证：优先打开携带启动令牌的认证链接（真实浏览器
-    // 顶层导航可正常换取 Cookie）；无令牌时退回裸地址。
+    // Newer dsh web has browser authentication: prefer opening the authenticated link carrying the launch token (a real browser
+    // top-level navigation can exchange it for a Cookie normally); fall back to the bare address when there is no token.
     let url = getUrl();
     const proxy = await ensureAuthProxy();
     if (proxy && proxy.token()) {
@@ -3521,8 +3521,8 @@ function activate(context) {
     }
     const view = activeView;
 
-    // dsh 正在运行、且不是本窗口启动时，重启会中断其他窗口的任务，先征得确认。
-    // dsh 未运行、或本就是本窗口启动时，无需确认直接重启/启动。
+    // When dsh is running and was not started by this window, a restart would interrupt tasks in other windows, so get confirmation first.
+    // When dsh is not running, or was started by this window, restart/start directly without confirmation.
     const running = await checkUrl(getUrl());
     if (running && !managedChild) {
       const choice = await vscode.window.showWarningMessage(
@@ -3571,15 +3571,15 @@ function activate(context) {
     }
   });
 
-  // VS Code 切换工作区（文件夹）时，把新工作区也注册进 DSH 列表。
+  // When VS Code switches workspace (folder), register the new workspace in the DSH list as well.
   const wsSub = vscode.workspace.onDidChangeWorkspaceFolders(() => {
     registerWorkspace().catch(() => {});
   });
 
-  // 发送选中内容到 DSH 对话框
+  // Send Selection to the DSH composer
   const sendSelectionCmd = vscode.commands.registerCommand('dsh.sendSelection', async () => {
     const editor = vscode.window.activeTextEditor;
-    // 发送目标：优先编辑器标签页，其次侧边栏面板。
+    // Send target: prefer the editor tab, then the sidebar panel.
     const target = activeTab || activeView;
     if (!editor || !target) {
       vscode.window.showWarningMessage(t('请先打开 DeepSeek Harness 面板或标签页并选中代码'));
@@ -3631,13 +3631,13 @@ function activate(context) {
 }
 
 function deactivate() {
-  // 扩展停用时，按配置决定是否结束由本扩展启动的 dsh 进程。
+  // On extension deactivation, the configuration decides whether to end the dsh process started by this extension.
   const killOnDispose = cfg().get('dshPanel.killOnDispose', true);
   if (killOnDispose && managedChild) {
     killTree(managedChild);
     managedChild = null;
   }
-  // 关闭受管认证代理（令牌已缓存进 globalState，下次启动可无感复用）。
+  // Close the managed auth proxy (the token is already cached in `globalState`, so it can be reused seamlessly on the next start).
   if (authProxy) {
     const p = authProxy;
     authProxy = null;
@@ -3647,7 +3647,7 @@ function deactivate() {
 
 module.exports = { activate, deactivate };
 
-// 仅供测试钩子使用（打包体积无影响；运行时行为不变）。
+// For test hooks only (no impact on bundle size; runtime behavior is unchanged).
 module.exports.__internals = {
   createAuthProxy,
   ensureAuthProxy,

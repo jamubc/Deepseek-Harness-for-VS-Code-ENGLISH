@@ -305,16 +305,6 @@ function applyManifestTranslations(manifest) {
 }
 
 /**
- * The English text actually used for the `⏳ Submitted to…` marker.
- * Exported so tests can assert the protocol strings stay in lockstep.
- * @param {string} source upstream Chinese literal
- * @returns {string}
- */
-function protocolText(source) {
-  return t(source);
-}
-
-/**
  * A snapshot of the loaded bundle, for the l10n coverage checker.
  * @returns {Record<string, string>}
  */
@@ -322,16 +312,15 @@ function bundleSnapshot() {
   return Object.assign(Object.create(null), bundle);
 }
 
-/** i18n entry point, in the `t` shape but with an explicit bundle path. */
-const BUNDLE_PATH = BUNDLE_FILE;
-
 module.exports = {
+  /** Translate a user-facing string; see the long comment above. */
   t,
-  format2,
-  untranslated,
+  /** Apply English to the manifest copy VS Code hands to `activate()`. */
   applyManifestTranslations,
+  /** The manifest translation table, for the sync script and tests. */
   manifestTranslations,
-  protocolText,
-  bundleSnapshot,
-  BUNDLE_PATH
+  /** Substitute `{0}` / `{name}` placeholders, mirroring VS Code's format2. */
+  format2,
+  /** A copy of the loaded dictionary, for coverage tooling. */
+  bundleSnapshot
 };

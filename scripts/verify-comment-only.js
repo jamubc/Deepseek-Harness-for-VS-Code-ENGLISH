@@ -137,7 +137,10 @@ if (a.length !== b.length) {
 
 let diffs = 0;
 for (let i = 0; i < a.length; i++) {
-  if (a[i] !== b[i]) {
+  // Compare the code residue only. A comment's blanked span has a different width
+  // once translated, so trailing whitespace must not count as a code change; leading
+  // whitespace is kept because it is indentation and a real difference there matters.
+  if (a[i].trimEnd() !== b[i].trimEnd()) {
     diffs++;
     if (diffs <= 20) {
       console.error('line ' + (i + 1) + ' differs in code (not just comments):');

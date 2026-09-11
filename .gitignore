@@ -3,3 +3,5 @@ node_modules/
 *.log
 .DS_Store
 *.vsix
+# Scratch space for bulk comment translation (see scripts/comment-tools.js).
+.i18n/

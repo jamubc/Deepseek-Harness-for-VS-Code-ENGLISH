@@ -7,6 +7,13 @@ A zero-dependency VS Code extension that brings **DeepSeek Harness (DSH)** into 
 
 > **The Copilot bridge does not affect the "faithful window" mode** — it is only a convenience feature for easier coding; as long as you do not select these model entries, everything behaves exactly as it would without the bridge.
 
+> **About this repository (English fork).** This is the English edition of the upstream
+> project. All English lives in a small in-repo language pack (`l10n/`, plus `l10n.js` and
+> a handful of `t()` calls), so upstream's own text is kept byte-identical as translation
+> keys and routine upstream updates stay a mechanical merge. Maintaining this fork? See
+> **[docs/UPSTREAM-SYNC.md](docs/UPSTREAM-SYNC.md)**; terminology decisions are recorded in
+> [TERMINOLOGY.md](TERMINOLOGY.md).
+
 If you like this extension, please star [Deepseek-Harness-for-VS-Code](https://github.com/Vithrive/Deepseek-Harness-for-VS-Code); if you need a Chrome extension, take a look at [Deepseek-Harness-for-Chrome](https://github.com/Vithrive/Deepseek-Harness-for-Chrome).
 
 > **Version compatibility**: **from v0.8.34**, this extension supports **dsh v0.1.2-rc.1 and later** — it automatically completes the web browser authentication added in that dsh version (the extension's managed auth proxy keeps the panel and the Copilot bridge free of logins and interruptions throughout; see "dsh web browser authentication" below). It is also **backward compatible** with older dsh versions that do not enable authentication (launch-flag detection, and automatic fallback between the old and new RPC endpoint formats).
