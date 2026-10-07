@@ -452,10 +452,12 @@ async function registerWorkspace() {
 
 const AUTH_PROXY_STATE_KEY = 'dsh.webAuth.tokenCache';
 
-/** Whether this is a local (non-Remote) scenario where dshPanel.url points at a loopback address. */
+/** Whether this is a local (or WSL Remote — host and dsh share one machine's loopback) scenario where dshPanel.url points at a loopback address. */
 function isLocalLoopbackTarget() {
   try {
-    if (vscode.env && vscode.env.remoteName) return false;
+    // Except WSL Remote: the extension host and dsh both live inside WSL (same-machine loopback), so the proxy preconditions match local;
+    // with mirrored networking / VS Code port forwarding, the Windows-side webview can reach 127.0.0.1 inside WSL.
+    if (vscode.env && vscode.env.remoteName && vscode.env.remoteName !== 'wsl') return false;
     const u = new URL(getUrl());
     return ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(u.hostname);
   } catch {
@@ -866,18 +868,50 @@ function createAuthProxy(targetUrl) {
   });
 }
 
+/** Without a proxy, probe the dsh index page status directly (401 = newer build requires auth; used to make the guidance reachable). */
+function probeDirectIndexStatus(timeoutMs = 4000) {
+  return new Promise((done) => {
+    try {
+      const u = new URL(getUrl());
+      const lib = u.protocol === 'https:' ? https : http;
+      const req = lib.request({
+        hostname: u.hostname,
+        port: Number(u.port) || (u.protocol === 'https:' ? 443 : 80),
+        path: '/',
+        method: 'GET',
+        headers: { accept: '*/*' }
+      }, (res) => {
+        res.resume();
+        done(res.statusCode || 0);
+      });
+      req.on('error', () => done(0));
+      req.setTimeout(timeoutMs, () => { req.destroy(); done(0); });
+      req.end();
+    } catch {
+      done(0);
+    }
+  });
+}
+
 /**
  * Resolve the final display URL for the panel:
  * - Proxy available and cookie ready → proxy URL (the webview gets seamless authentication through it);
  * - Proxy available but unauthenticated and upstream 401 → { unauthorized: true } (guidance takes over);
- * - Otherwise (Remote / non-loopback / old dsh without auth) → the original direct display URL.
+ * - No proxy (true remote / non-loopback) but the direct probe sees 401 → { unauthorized: true } (keeps the guidance
+ *   and the Open in browser (with token) action reachable instead of showing the raw 401 text);
+ * - Otherwise (local old dsh / remote without auth) → the original direct display URL.
  * @param {boolean} isTab whether tab mode is enabled
  * @returns {Promise<{displayUrl: string} | {unauthorized: true}>}
  */
 async function resolvePanelTarget(isTab) {
   let displayUrl = isTab ? getTabDisplayUrl(await resolveDisplayUrl()) : await resolveDisplayUrl();
   const proxy = await ensureAuthProxy();
-  if (!proxy) return { displayUrl };
+  if (!proxy) {
+    // True remote / non-loopback: no proxy can inject the Cookie, but the user should at least see visible guidance.
+    const status = await probeDirectIndexStatus();
+    if (status === 401) return { unauthorized: true };
+    return { displayUrl };
+  }
   await proxy.waitAuthed(8000);
   if (proxy.hasCookieForBase()) {
     displayUrl = isTab ? proxy.urlForTab() : proxy.baseUrl();
@@ -906,11 +940,15 @@ function maybeGuideAuth(isTab) {
   const now = Date.now();
   if (now - lastAuthPromptAt < 3 * 60 * 1000) return;
   lastAuthPromptAt = now;
-  vscode.window.showWarningMessage(
-    t('新版 dsh web 启用了浏览器认证，当前实例不是由本窗口启动，无法静默认证。'),
-    t('重启并自动认证（推荐）'),
-    t('粘贴认证链接')
-  ).then(async (choice) => {
+  const hasProxy = !!authProxy; // no proxy = true remote / non-loopback: offer a browser authentication route
+  const actions = hasProxy
+    ? [t('重启并自动认证（推荐）'), t('粘贴认证链接')]
+    : [t('在浏览器中打开（携带令牌）'), t('粘贴认证链接')];
+  const message = hasProxy
+    ? t('新版 dsh web 启用了浏览器认证，当前实例不是由本窗口启动，无法静默认证。')
+    : t('新版 dsh web 需要浏览器认证，当前 Remote/非回环场景无法在面板内自动代理认证。');
+  vscode.window.showWarningMessage(message, ...actions).then(async (choice) => {
+    if (!choice) return;
     if (choice === t('重启并自动认证（推荐）')) {
       const ok = await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
@@ -928,6 +966,10 @@ function maybeGuideAuth(isTab) {
       } else {
         vscode.window.showErrorMessage(t('dsh web 重启失败，请手动重启后重试。'));
       }
+    } else if (choice === t('在浏览器中打开（携带令牌）')) {
+      await vscode.commands.executeCommand('dshPanel.openInBrowser');
+      lastAuthPromptAt = 0;
+      // After authenticating in the browser, the user can refresh the panel manually (a true-remote panel still cannot carry the Cookie).
     } else if (choice === t('粘贴认证链接')) {
       const input = await vscode.window.showInputBox({
         prompt: t('粘贴 dsh web 启动时打印的认证链接（形如 http://127.0.0.1:3080/?token=…，整行粘贴即可）'),
@@ -1487,7 +1529,7 @@ function escapeHtml(s) {
 // and users only need to install this extension, with no manual DSH plugin installation.
 // =====================================================================
 const DSH_PLUGIN_NAME = 'dsh-drop-caret';
-const DSH_PLUGIN_MIN = '0.2.2';
+const DSH_PLUGIN_MIN = '0.2.3';
 const NPMJS_REGISTRY = 'https://registry.npmjs.org/';
 // Bundled compatibility plugin (written directly into the DSH web profile with the extension files, not through npm):
 // Fixes ⌘C/⌘V/⌘X not working on macOS when this extension embeds the DSH page in a cross-origin iframe.
@@ -1928,10 +1970,13 @@ async function preparePanelHtml(isTab) {
   const target = await resolvePanelTarget(isTab);
   if (target.unauthorized) {
     maybeGuideAuth(isTab);
+    const hasProxy = !!authProxy;
     return {
       ok: false,
       kind: 'unauthorized',
-      reason: t('dsh web 新版启用了浏览器认证，当前实例不是由本窗口启动，无法静默认证。点击面板顶部的「重启 dsh web」，由扩展接管并自动完成认证。')
+      reason: hasProxy
+        ? t('dsh web 新版启用了浏览器认证，当前实例不是由本窗口启动，无法静默认证。点击面板顶部的「重启 dsh web」，由扩展接管并自动完成认证。')
+        : t('dsh web 新版需要浏览器认证，当前 Remote/非回环场景无法在面板内自动代理认证。请查看通知：在浏览器中打开携带令牌的链接完成认证，或粘贴 dsh web 打印的认证链接。')
     };
   }
   try {
@@ -3505,11 +3550,18 @@ function activate(context) {
 
   const openBrowserCmd = vscode.commands.registerCommand('dshPanel.openInBrowser', async () => {
     // Newer dsh web has browser authentication: prefer opening the authenticated link carrying the launch token (a real browser
-    // top-level navigation can exchange it for a Cookie normally); fall back to the bare address when there is no token.
+    // top-level navigation can exchange it for a Cookie normally); with a proxy, use the proxy-synthesized authenticated URL; without one,
+    // still try to build the link from the token captured on stdout, so the user always has a manual authentication route.
     let url = getUrl();
     const proxy = await ensureAuthProxy();
     if (proxy && proxy.token()) {
       url = proxy.authenticatedUrl();
+    } else if (dshLaunchToken) {
+      try {
+        const u = new URL(url);
+        u.searchParams.set('token', dshLaunchToken);
+        url = u.toString();
+      } catch { /* keep the bare address */ }
     }
     vscode.env.openExternal(vscode.Uri.parse(url));
   });
@@ -3663,5 +3715,7 @@ module.exports.__internals = {
   getPort,
   getDshCommand,
   runCommandOk,
-  runCommandOutput
+  runCommandOutput,
+  isLocalLoopbackTarget,
+  probeDirectIndexStatus
 };

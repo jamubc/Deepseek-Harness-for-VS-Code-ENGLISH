@@ -141,5 +141,8 @@
   "[DeepSeek Harness] 标签页渲染失败：": "[DeepSeek Harness] Failed to render the tab:",
   "[DeepSeek Harness] 安装内置插件 {0} 失败：": "[DeepSeek Harness] Failed to install the bundled plugin {0}:",
   "[DeepSeek Harness] 自动安装 {0} 失败：": "[DeepSeek Harness] Failed to auto-install {0}:",
-  "\n\n": "\n\n"
+  "\n\n": "\n\n",
+  "在浏览器中打开（携带令牌）": "Open in browser (with token)",
+  "新版 dsh web 需要浏览器认证，当前 Remote/非回环场景无法在面板内自动代理认证。": "This build of dsh web requires browser authentication, and in this Remote / non-loopback setup the panel cannot proxy authentication automatically.",
+  "dsh web 新版需要浏览器认证，当前 Remote/非回环场景无法在面板内自动代理认证。请查看通知：在浏览器中打开携带令牌的链接完成认证，或粘贴 dsh web 打印的认证链接。": "This build of dsh web requires browser authentication, and in this Remote / non-loopback setup the panel cannot proxy authentication automatically. Follow the notification: open the link carrying the token in your browser to authenticate, or paste the authentication link printed by dsh web."
 }

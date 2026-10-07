@@ -2,7 +2,7 @@
   "name": "deepseek-harness-vscode-english",
   "displayName": "DeepSeek Harness for VS Code (English)",
   "description": "%description%",
-  "version": "0.8.43",
+  "version": "0.8.45",
   "publisher": "jandrewm",
   "license": "MIT",
   "icon": "media/icon.png",

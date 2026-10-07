@@ -243,9 +243,12 @@ async function main() {
 
     console.log('[5] real restart scenario (the same path as Restart dsh web in the extension)');
     const tokenBeforeRestart = proxy.token();
-    // kill the instance this E2E test started, freeing the port
+    // kill the instance this E2E test started, freeing the port (Windows taskkill / POSIX SIGKILL)
     if (process.platform === 'win32' && child.pid) {
       spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
+      killedOwnChild = true;
+    } else if (child.pid && !killedOwnChild) {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
       killedOwnChild = true;
     }
     for (let i = 0; i < 20; i++) { await sleep(500); if (await portFree(PORT)) break; }
@@ -282,20 +285,24 @@ async function main() {
       killed = true;
     }
     if (!killed) {
-      // clean up the instance the extension started, by port (Windows: netstat finds the LISTENING PID → taskkill /t)
-      const net = require('child_process').execSync('netstat -ano -p tcp', { encoding: 'utf8' });
-      const pids = new Set();
-      for (const line of net.split(/\r?\n/)) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length >= 5 && parts[0] === 'TCP' && parts[1] === '127.0.0.1:' + PORT && parts[3] === 'LISTENING' && parts[4]) {
-          pids.add(parts[4]);
-        }
-      }
-      for (const pid of pids) {
-        try { spawn('taskkill', ['/pid', pid, '/t', '/f'], { stdio: 'ignore', windowsHide: true }); } catch { /* noop */ }
-      }
+      // clean up, by port, the instance the extension function started in step [5] (cross-platform: Windows netstat + taskkill;
+      // POSIX uses fuser/lsof and does not depend on netstat, which Linux often lacks).
+      const execSync = require('child_process').execSync;
       if (process.platform !== 'win32') {
-        try { require('child_process').execSync('fuser -k ' + PORT + '/tcp 2>/dev/null || true'); } catch { /* noop */ }
+        try { execSync('fuser -k ' + PORT + '/tcp 2>/dev/null || true'); } catch { /* noop */ }
+        try { execSync('lsof -ti:' + PORT + ' 2>/dev/null | xargs -r kill -9 2>/dev/null || true'); } catch { /* noop */ }
+      } else {
+        const net = execSync('netstat -ano -p tcp', { encoding: 'utf8' });
+        const pids = new Set();
+        for (const line of net.split(/\r?\n/)) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 5 && parts[0] === 'TCP' && parts[1] === '127.0.0.1:' + PORT && parts[3] === 'LISTENING' && parts[4]) {
+            pids.add(parts[4]);
+          }
+        }
+        for (const pid of pids) {
+          try { spawn('taskkill', ['/pid', pid, '/t', '/f'], { stdio: 'ignore', windowsHide: true }); } catch { /* noop */ }
+        }
       }
     }
     await sleep(800);

@@ -78,7 +78,8 @@ function readJson(file, label) {
  */
 function stripComments(src) {
   return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    // skip single-quoted literals so a string like '*/*' is not mistaken for a block comment
+    .replace(/'(?:[^'\\\n]|\\.)*'|\/\*[\s\S]*?\*\//g, (m) => (m[0] === "'" ? m : m.replace(/[^\n]/g, ' ')))
     .replace(/(^|[^:'"\\])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(m.length - p1.length));
 }
 
