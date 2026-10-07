@@ -1,5 +1,8 @@
 # DeepSeek Harness for VS Code
 
+<img width="1864" height="1003" alt="image" src="https://github.com/user-attachments/assets/999abc71-6353-42f5-a572-cf8cb8cd35e1" />
+
+
 A zero-dependency VS Code extension that brings **DeepSeek Harness (DSH)** into VS Code in two forms:
 
 1. **Faithful window**: embeds the DSH web GUI as-is in a VS Code sidebar, secondary sidebar, or editor tab, and auto-detects and starts the DSH service — no script injection, no UI rewriting, and no interaction interception, so nothing you do to organize DSH's pages, assemble third-party plugins, or otherwise extend it is affected;
